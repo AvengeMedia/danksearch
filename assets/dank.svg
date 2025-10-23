@@ -1,0 +1,46 @@
+<svg viewBox="0 0 136 50" xmlns="http://www.w3.org/2000/svg">
+  <!-- D -->
+  <rect x="0" y="5" width="24" height="8" fill="#CCBEFF"/>
+  <rect x="0" y="13" width="8" height="8" fill="#CCBEFF"/>
+  <rect x="20" y="13" width="8" height="8" fill="#CCBEFF"/>
+  <rect x="0" y="21" width="8" height="8" fill="#CCBEFF"/>
+  <rect x="20" y="21" width="8" height="8" fill="#CCBEFF"/>
+  <rect x="0" y="29" width="8" height="8" fill="#CCBEFF"/>
+  <rect x="20" y="29" width="8" height="8" fill="#CCBEFF"/>
+  <rect x="0" y="37" width="24" height="8" fill="#CCBEFF"/>
+  
+  <!-- A -->
+  <rect x="36" y="5" width="20" height="8" fill="#CCBEFF"/>
+  <rect x="32" y="13" width="8" height="8" fill="#CCBEFF"/>
+  <rect x="52" y="13" width="8" height="8" fill="#CCBEFF"/>
+  <rect x="32" y="21" width="28" height="8" fill="#CCBEFF"/>
+  <rect x="32" y="29" width="8" height="8" fill="#CCBEFF"/>
+  <rect x="52" y="29" width="8" height="8" fill="#CCBEFF"/>
+  <rect x="32" y="37" width="8" height="8" fill="#CCBEFF"/>
+  <rect x="52" y="37" width="8" height="8" fill="#CCBEFF"/>
+  
+  <!-- N -->
+  <rect x="64" y="5" width="12" height="8" fill="#CCBEFF"/>
+  <rect x="92" y="5" width="8" height="8" fill="#CCBEFF"/>
+  <rect x="64" y="13" width="16" height="8" fill="#CCBEFF"/>
+  <rect x="92" y="13" width="8" height="8" fill="#CCBEFF"/>
+  <rect x="64" y="21" width="8" height="8" fill="#CCBEFF"/>
+  <rect x="76" y="21" width="8" height="8" fill="#CCBEFF"/>
+  <rect x="92" y="21" width="8" height="8" fill="#CCBEFF"/>
+  <rect x="64" y="29" width="8" height="8" fill="#CCBEFF"/>
+  <rect x="80" y="29" width="8" height="8" fill="#CCBEFF"/>
+  <rect x="92" y="29" width="8" height="8" fill="#CCBEFF"/>
+  <rect x="64" y="37" width="8" height="8" fill="#CCBEFF"/>
+  <rect x="84" y="37" width="16" height="8" fill="#CCBEFF"/>
+  
+  <!-- K -->
+  <rect x="104" y="5" width="8" height="8" fill="#CCBEFF"/>
+  <rect x="124" y="5" width="8" height="8" fill="#CCBEFF"/>
+  <rect x="104" y="13" width="8" height="8" fill="#CCBEFF"/>
+  <rect x="120" y="13" width="8" height="8" fill="#CCBEFF"/>
+  <rect x="104" y="21" width="20" height="8" fill="#CCBEFF"/>
+  <rect x="104" y="29" width="8" height="8" fill="#CCBEFF"/>
+  <rect x="120" y="29" width="8" height="8" fill="#CCBEFF"/>
+  <rect x="104" y="37" width="8" height="8" fill="#CCBEFF"/>
+  <rect x="124" y="37" width="8" height="8" fill="#CCBEFF"/>
+</svg>

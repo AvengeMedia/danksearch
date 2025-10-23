@@ -1,0 +1,58 @@
+# DankSearch Configuration File
+# Default location: ~/.config/danksearch/config.toml
+# Override with: dsearch -c /path/to/config.toml
+
+# Index storage path (defaults to $XDG_CACHE_HOME/danksearch/index or ~/.cache/danksearch/index)
+index_path = "/home/brandon/.cache/danksearch/index"
+
+# HTTP server listen address
+listen_addr = ":43654"
+
+# Maximum file size to index (in bytes)
+max_file_bytes = 2097152  # 2MB
+
+# Number of indexing workers (defaults to CPU count / 2)
+worker_count = 4
+
+# Index all file types (not just text files)
+index_all_files = true
+
+# Auto re-index on startup if due (default: false)
+auto_reindex = false
+
+# Re-index interval in hours (0 = disable periodic re-indexing)
+reindex_interval_hours = 24
+
+# File extensions to extract text content from
+text_extensions = [
+    ".txt", ".md", ".go", ".py", ".js", ".ts",
+    ".jsx", ".tsx", ".json", ".yaml", ".yml",
+    ".toml", ".html", ".css", ".rs", ".c",
+    ".cpp", ".h", ".java", ".rb", ".php", ".sh",
+]
+
+# Multiple paths to index with individual configuration
+[[index_paths]]
+path = "/home/brandon"
+max_depth = 6  # Default depth for home directory
+exclude_hidden = true
+exclude_dirs = [
+    "node_modules", "bower_components", "__pycache__", "site-packages",
+    "venv", ".venv", "target", "dist", "build", "vendor", ".cache"
+]
+
+[[index_paths]]
+path = "/home/brandon/repos"
+max_depth = 6  # Go deeper for repos directory
+exclude_hidden = true
+exclude_dirs = [
+    "node_modules", "bower_components", "__pycache__", "site-packages",
+    "venv", ".venv", "target", "dist", "build", "vendor", ".cache",
+    ".git", ".idea", ".vscode"
+]
+
+[[index_paths]]
+path = "/home/brandon/Documents"
+max_depth = 0  # Unlimited depth for Documents
+exclude_hidden = false  # Include hidden files in Documents
+exclude_dirs = []
