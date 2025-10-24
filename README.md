@@ -4,7 +4,7 @@
 
 </div>
 
-# dsearch (danksearch)
+# dsearch
 
 A configurable filesystem search service powered by [bleve](https://github.com/blevesearch/bleve) for GNU/Linux.
 
@@ -30,7 +30,7 @@ make && make install && make install-service
 Best to run as a systemd user unit:
 
 ```bash
-systemctl enable --now danksearch
+systemctl enable --now dsearch
 ```
 
 Then search with various options:
@@ -65,4 +65,4 @@ Or visit [http://localhost:43654/docs](http://localhost:43654/docs) for rest API
 
 See [config.example.toml](./config.example.toml) for configuration options.
 
-On startup, a configuration file will be created at `~/.config/danksearch/config.toml`
+On startup, a configuration file will be created at `~/.config/dsearch/config.toml`

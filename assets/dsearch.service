@@ -1,6 +1,6 @@
 [Unit]
-Description=DankSearch - Fast filesystem search service
-Documentation=https://github.com/AvengeMedia/danksearch
+Description=dsearch - Fast filesystem search service
+Documentation=https://github.com/AvengeMedia/dsearch
 After=network.target
 
 [Service]
@@ -11,7 +11,7 @@ RestartSec=5s
 
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=danksearch
+SyslogIdentifier=dsearch
 
 [Install]
 WantedBy=default.target

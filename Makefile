@@ -5,6 +5,7 @@ SOURCE_DIR=cmd/dsearch
 BUILD_DIR=bin
 INSTALL_DIR=$(HOME)/.local/bin
 SYSTEMD_USER_DIR=$(HOME)/.config/systemd/user
+SERVICE_NAME=dsearch
 
 GO=go
 GOFLAGS=-ldflags="-s -w"
@@ -78,16 +79,16 @@ version: check-go
 install-service: install
 	@echo "Installing systemd user service..."
 	@mkdir -p $(SYSTEMD_USER_DIR)
-	@cp assets/danksearch.service $(SYSTEMD_USER_DIR)/danksearch.service
+	@cp assets/$(SERVICE_NAME).service $(SYSTEMD_USER_DIR)/$(SERVICE_NAME).service
 	@systemctl --user daemon-reload
-	@echo "Systemd service installed. Enable with: systemctl --user enable danksearch"
-	@echo "Start with: systemctl --user start danksearch"
+	@echo "Systemd service installed. Enable with: systemctl --user enable $(SERVICE_NAME)"
+	@echo "Start with: systemctl --user start $(SERVICE_NAME)"
 
 uninstall-service:
-	@echo "Stopping and disabling danksearch service..."
-	@systemctl --user stop danksearch 2>/dev/null || true
-	@systemctl --user disable danksearch 2>/dev/null || true
-	@rm -f $(SYSTEMD_USER_DIR)/danksearch.service
+	@echo "Stopping and disabling $(SERVICE_NAME) service..."
+	@systemctl --user stop $(SERVICE_NAME) 2>/dev/null || true
+	@systemctl --user disable $(SERVICE_NAME) 2>/dev/null || true
+	@rm -f $(SYSTEMD_USER_DIR)/$(SERVICE_NAME).service
 	@systemctl --user daemon-reload
 	@echo "Systemd service uninstalled"
 
