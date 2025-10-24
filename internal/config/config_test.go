@@ -21,8 +21,12 @@ func TestDefault(t *testing.T) {
 		t.Errorf("MaxFileBytes = %v, want %v", cfg.MaxFileBytes, 2*1024*1024)
 	}
 
-	if cfg.WorkerCount != runtime.NumCPU() {
-		t.Errorf("WorkerCount = %v, want %v", cfg.WorkerCount, runtime.NumCPU())
+	expectedWorkers := runtime.NumCPU() / 2
+	if expectedWorkers < 1 {
+		expectedWorkers = 1
+	}
+	if cfg.WorkerCount != expectedWorkers {
+		t.Errorf("WorkerCount = %v, want %v", cfg.WorkerCount, expectedWorkers)
 	}
 
 	if len(cfg.IndexPaths) == 0 {
