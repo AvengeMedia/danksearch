@@ -16,19 +16,25 @@ import (
 	"github.com/AvengeMedia/danksearch/internal/errdefs"
 	"github.com/AvengeMedia/danksearch/internal/log"
 	bleve "github.com/blevesearch/bleve/v2"
+	_ "github.com/blevesearch/bleve/v2/analysis/analyzer/custom"
+	_ "github.com/blevesearch/bleve/v2/analysis/token/edgengram"
+	_ "github.com/blevesearch/bleve/v2/analysis/token/lowercase"
+	_ "github.com/blevesearch/bleve/v2/analysis/token/ngram"
+	_ "github.com/blevesearch/bleve/v2/analysis/tokenizer/single"
 	"github.com/blevesearch/bleve/v2/mapping"
 	query "github.com/blevesearch/bleve/v2/search/query"
 )
 
 type Document struct {
-	Path        string    `json:"path"`
-	Filename    string    `json:"filename"`
-	Title       string    `json:"title"`
-	Body        string    `json:"body"`
-	ContentType string    `json:"content_type"`
-	ModTime     time.Time `json:"mtime"`
-	Size        int64     `json:"size"`
-	Hash        string    `json:"hash"`
+	Path           string    `json:"path"`
+	Filename       string    `json:"filename"`
+	FilenameSub    string    `json:"filename_sub"`
+	FilenamePrefix string    `json:"filename_prefix"`
+	Body           string    `json:"body"`
+	ContentType    string    `json:"content_type"`
+	ModTime        time.Time `json:"mtime"`
+	Size           int64     `json:"size"`
+	Hash           string    `json:"hash"`
 }
 
 type Indexer struct {
@@ -111,6 +117,49 @@ func getStoreConfig() map[string]interface{} {
 
 func buildIndexMapping() mapping.IndexMapping {
 	m := bleve.NewIndexMapping()
+
+	err := m.AddCustomTokenFilter("ngram_2_15", map[string]interface{}{
+		"type": "ngram",
+		"min":  float64(2),
+		"max":  float64(15),
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	err = m.AddCustomTokenFilter("edge_ngram_2_30", map[string]interface{}{
+		"type": "edge_ngram",
+		"min":  float64(2),
+		"max":  float64(30),
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	err = m.AddCustomAnalyzer("filename_ngram", map[string]interface{}{
+		"type":      "custom",
+		"tokenizer": "single",
+		"token_filters": []string{
+			"to_lower",
+			"ngram_2_15",
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	err = m.AddCustomAnalyzer("filename_edge", map[string]interface{}{
+		"type":      "custom",
+		"tokenizer": "single",
+		"token_filters": []string{
+			"to_lower",
+			"edge_ngram_2_30",
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+
 	docMapping := bleve.NewDocumentMapping()
 
 	pathField := bleve.NewTextFieldMapping()
@@ -120,14 +169,18 @@ func buildIndexMapping() mapping.IndexMapping {
 
 	filenameField := bleve.NewTextFieldMapping()
 	filenameField.Store = true
-	filenameField.IncludeTermVectors = true
 	filenameField.Analyzer = "keyword"
 	docMapping.AddFieldMappingsAt("filename", filenameField)
 
-	titleField := bleve.NewTextFieldMapping()
-	titleField.Store = true
-	titleField.IncludeTermVectors = true
-	docMapping.AddFieldMappingsAt("title", titleField)
+	filenameSubField := bleve.NewTextFieldMapping()
+	filenameSubField.Store = false
+	filenameSubField.Analyzer = "filename_ngram"
+	docMapping.AddFieldMappingsAt("filename_sub", filenameSubField)
+
+	filenamePrefixField := bleve.NewTextFieldMapping()
+	filenamePrefixField.Store = false
+	filenamePrefixField.Analyzer = "filename_edge"
+	docMapping.AddFieldMappingsAt("filename_prefix", filenamePrefixField)
 
 	bodyField := bleve.NewTextFieldMapping()
 	bodyField.Store = false
@@ -203,12 +256,13 @@ func (i *Indexer) readDocument(path string, info os.FileInfo) (*Document, error)
 	}
 
 	doc := &Document{
-		Path:        path,
-		Filename:    filename,
-		Title:       filename,
-		ContentType: contentType,
-		ModTime:     info.ModTime(),
-		Size:        info.Size(),
+		Path:           path,
+		Filename:       filename,
+		FilenameSub:    filename,
+		FilenamePrefix: filename,
+		ContentType:    contentType,
+		ModTime:        info.ModTime(),
+		Size:           info.Size(),
 	}
 
 	if i.config.IsTextFile(path) {
@@ -266,37 +320,17 @@ func (i *Indexer) SearchWithOptions(opts *SearchOptions) (*bleve.SearchResult, e
 	// Build the main query
 	var mainQuery query.Query
 
-	// Special case: match all
 	if opts.Query == "*" {
 		mainQuery = bleve.NewMatchAllQuery()
 	} else if opts.Field != "" {
-		// Field-specific search
 		mainQuery = i.buildFieldQuery(opts.Query, opts.Field, opts.Fuzzy)
 	} else {
-		// Search across all fields with boosting
-		queryLower := strings.ToLower(opts.Query)
-		filenamePattern := "*" + queryLower + "*"
-
-		filenameQuery := bleve.NewWildcardQuery(filenamePattern)
-		filenameQuery.SetField("filename")
-		filenameQuery.SetBoost(10.0)
-
-		titleQuery := bleve.NewWildcardQuery(filenamePattern)
-		titleQuery.SetField("title")
-		titleQuery.SetBoost(5.0)
-
+		filenameQuery := i.buildFilenameQuery(opts.Query, 20.0, 10.0)
 		bodyQuery := bleve.NewMatchQuery(opts.Query)
 		bodyQuery.SetField("body")
 		bodyQuery.SetBoost(1.0)
 
-		if opts.Fuzzy {
-			fuzzyBodyQuery := bleve.NewFuzzyQuery(opts.Query)
-			fuzzyBodyQuery.SetField("body")
-			fuzzyBodyQuery.SetBoost(0.5)
-			mainQuery = bleve.NewDisjunctionQuery(filenameQuery, titleQuery, bodyQuery, fuzzyBodyQuery)
-		} else {
-			mainQuery = bleve.NewDisjunctionQuery(filenameQuery, titleQuery, bodyQuery)
-		}
+		mainQuery = bleve.NewDisjunctionQuery(filenameQuery, bodyQuery)
 	}
 
 	// Build filters
@@ -393,32 +427,51 @@ func (i *Indexer) SearchWithOptions(opts *SearchOptions) (*bleve.SearchResult, e
 	return result, nil
 }
 
-func (i *Indexer) buildFieldQuery(queryStr, field string, fuzzy bool) query.Query {
-	queryLower := strings.ToLower(queryStr)
+func (i *Indexer) buildFilenameQuery(queryStr string, boostPrefix, boostContains float64) query.Query {
+	q := strings.TrimSpace(queryStr)
+	if q == "" {
+		return bleve.NewMatchNoneQuery()
+	}
 
-	switch field {
-	case "filename", "title":
-		pattern := "*" + queryLower + "*"
-		q := bleve.NewWildcardQuery(pattern)
-		q.SetField(field)
-		return q
-	case "body":
+	disj := bleve.NewDisjunctionQuery()
+
+	prefixQuery := bleve.NewPrefixQuery(strings.ToLower(q))
+	prefixQuery.SetField("filename_prefix")
+	prefixQuery.SetBoost(boostPrefix)
+	disj.AddQuery(prefixQuery)
+
+	if len(q) >= 2 {
+		matchQuery := bleve.NewMatchQuery(q)
+		matchQuery.SetField("filename_sub")
+		matchQuery.SetBoost(boostContains)
+		disj.AddQuery(matchQuery)
+	}
+
+	if len(disj.Disjuncts) == 1 {
+		return disj.Disjuncts[0]
+	}
+	return disj
+}
+
+func (i *Indexer) buildFieldQuery(queryStr, field string, fuzzy bool) query.Query {
+	if field == "filename" {
+		return i.buildFilenameQuery(queryStr, 2.0, 1.0)
+	}
+
+	if field == "body" {
 		if fuzzy {
 			q := bleve.NewFuzzyQuery(queryStr)
 			q.SetField("body")
 			return q
 		}
-		// Use match query - searches for all words in the query
-		// Note: Special characters like //, !, etc. are normalized by the analyzer
 		q := bleve.NewMatchQuery(queryStr)
 		q.SetField("body")
 		return q
-	default:
-		// Fallback to match query
-		q := bleve.NewMatchQuery(queryStr)
-		q.SetField(field)
-		return q
 	}
+
+	q := bleve.NewMatchQuery(queryStr)
+	q.SetField(field)
+	return q
 }
 
 func (i *Indexer) ReindexAll() error {

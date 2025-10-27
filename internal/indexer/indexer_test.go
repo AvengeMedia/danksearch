@@ -229,8 +229,8 @@ func TestReadDocument(t *testing.T) {
 		t.Errorf("Path = %v, want %v", doc.Path, testFile)
 	}
 
-	if doc.Title != "test.go" {
-		t.Errorf("Title = %v, want test.go", doc.Title)
+	if doc.Filename != "test.go" {
+		t.Errorf("Filename = %v, want test.go", doc.Filename)
 	}
 
 	if doc.Body != content {
