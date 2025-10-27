@@ -97,13 +97,16 @@ func (s *UnixServer) handleConnection(conn net.Conn) {
 	conn.Write([]byte("\n"))
 
 	scanner := bufio.NewScanner(conn)
-	for scanner.Scan() {
+	// Increase buffer size to handle large requests (default is 64KB max)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 10*1024*1024) // 10MB max
+	if scanner.Scan() {
 		line := scanner.Bytes()
 
 		var req models.Request
 		if err := json.Unmarshal(line, &req); err != nil {
 			models.RespondError(conn, 0, "invalid json")
-			continue
+			return
 		}
 
 		s.router.RouteRequest(conn, req)

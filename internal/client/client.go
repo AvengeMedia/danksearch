@@ -64,6 +64,9 @@ func sendRequest(method string, params map[string]interface{}) (json.RawMessage,
 	defer conn.Close()
 
 	scanner := bufio.NewScanner(conn)
+	// Increase buffer size to handle large responses (default is 64KB max)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 10*1024*1024) // 10MB max
 	if scanner.Scan() {
 		// Read and discard server info line
 	}

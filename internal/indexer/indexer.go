@@ -310,9 +310,6 @@ func (i *Indexer) SearchWithOptions(opts *SearchOptions) (*bleve.SearchResult, e
 		return nil, errdefs.NewCustomError(errdefs.ErrTypeSearchFailed, "index not ready", nil)
 	}
 
-	i.mu.RLock()
-	defer i.mu.RUnlock()
-
 	if opts.Limit <= 0 {
 		opts.Limit = 10
 	}
@@ -419,7 +416,13 @@ func (i *Indexer) SearchWithOptions(opts *SearchOptions) (*bleve.SearchResult, e
 		req.SortBy([]string{"-_score"})
 	}
 
-	result, err := i.index.Search(req)
+	// Only hold RLock briefly to get the index reference
+	// Bleve's index is thread-safe, so we don't need to hold the lock during search
+	i.mu.RLock()
+	idx := i.index
+	i.mu.RUnlock()
+
+	result, err := idx.Search(req)
 	if err != nil {
 		return nil, errdefs.NewCustomError(errdefs.ErrTypeSearchFailed, opts.Query, err)
 	}
@@ -567,9 +570,9 @@ func (i *Indexer) Stats() *config.IndexStats {
 
 func (i *Indexer) calculateStats() (*config.IndexStats, error) {
 	i.mu.RLock()
-	defer i.mu.RUnlock()
-
 	count, err := i.index.DocCount()
+	i.mu.RUnlock()
+
 	if err != nil {
 		return nil, err
 	}
@@ -598,7 +601,11 @@ func (i *Indexer) loadStatsDocument() (*config.IndexStats, error) {
 	req := bleve.NewSearchRequest(bleve.NewDocIDQuery([]string{"__stats__"}))
 	req.Fields = []string{"total_files", "total_bytes", "last_index_time", "index_duration"}
 
-	result, err := i.index.Search(req)
+	i.mu.RLock()
+	idx := i.index
+	i.mu.RUnlock()
+
+	result, err := idx.Search(req)
 	if err != nil || len(result.Hits) == 0 {
 		return nil, err
 	}
