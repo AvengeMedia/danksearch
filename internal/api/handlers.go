@@ -32,7 +32,7 @@ type Server struct {
 type SearchInput struct {
 	Query         string   `query:"q" minLength:"1" doc:"Search query" example:"mountain"`
 	Limit         int      `query:"limit" default:"10" minimum:"1" maximum:"500" doc:"Maximum results"`
-	Field         string   `query:"field" enum:"filename,body,title," doc:"Search specific field (empty for all)"`
+	Field         string   `query:"field" enum:"filename,body" doc:"Search specific field (empty for all)"`
 	ContentType   string   `query:"content_type" doc:"Filter by MIME type" example:"image/jpeg"`
 	Extension     string   `query:"ext" doc:"Filter by file extension" example:".jpg"`
 	Fuzzy         bool     `query:"fuzzy" doc:"Enable fuzzy matching for typos"`
