@@ -433,6 +433,12 @@ func (i *Indexer) buildFilenameQuery(queryStr string, boostPrefix, boostContains
 		return bleve.NewMatchNoneQuery()
 	}
 
+	if strings.Contains(q, "*") || strings.Contains(q, "?") {
+		wildcardQuery := bleve.NewWildcardQuery(strings.ToLower(q))
+		wildcardQuery.SetField("filename")
+		return wildcardQuery
+	}
+
 	disj := bleve.NewDisjunctionQuery()
 
 	prefixQuery := bleve.NewPrefixQuery(strings.ToLower(q))
