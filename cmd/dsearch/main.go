@@ -205,7 +205,21 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 	defer idx.Close()
 
-	if cfg.AutoReindex && idx.ShouldReindex(cfg.ReindexIntervalHours) {
+	count, err := idx.GetDocCount()
+	if err != nil {
+		return err
+	}
+
+	if count == 0 {
+		log.Infof("index is empty, building initial index...")
+		go func() {
+			if err := idx.ReindexAll(); err != nil {
+				log.Errorf("initial index build failed: %v", err)
+			} else {
+				log.Infof("initial index build complete")
+			}
+		}()
+	} else if cfg.AutoReindex && idx.ShouldReindex(cfg.ReindexIntervalHours) {
 		log.Infof("auto-reindex triggered (interval: %d hours)", cfg.ReindexIntervalHours)
 		go func() {
 			if err := idx.ReindexAll(); err != nil {
@@ -289,7 +303,7 @@ func runSearch(cmd *cobra.Command, args []string) error {
 		limit = 10000
 	}
 
-	opts := &client.SearchOptions{
+	clientOpts := &client.SearchOptions{
 		Query:     query,
 		Limit:     limit,
 		Field:     searchField,
@@ -301,7 +315,51 @@ func runSearch(cmd *cobra.Command, args []string) error {
 		MaxSize:   searchMaxSize,
 	}
 
-	result, err := client.SearchWithOptions(opts)
+	result, err := client.SearchWithOptions(clientOpts)
+	if err == nil {
+		if searchJSON {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(result)
+		}
+
+		log.Infof("found %d results in %s", result.Total, result.Took)
+		for i, hit := range result.Hits {
+			log.Infof("%d. %s (score: %.4f)", i+1, hit.ID, hit.Score)
+		}
+		return nil
+	}
+
+	cfg := buildConfig()
+
+	idx, err := indexer.New(cfg)
+	if err != nil {
+		return fmt.Errorf("server not running and cannot open index: %v", err)
+	}
+	defer idx.Close()
+
+	count, err := idx.GetDocCount()
+	if err != nil {
+		return err
+	}
+
+	if count == 0 {
+		return fmt.Errorf("index is empty - run 'dsearch index generate' or 'dsearch serve' first")
+	}
+
+	indexerOpts := &indexer.SearchOptions{
+		Query:     query,
+		Limit:     limit,
+		Field:     searchField,
+		Extension: searchExt,
+		Fuzzy:     searchFuzzy,
+		SortBy:    searchSort,
+		SortDesc:  searchSortDesc,
+		MinSize:   searchMinSize,
+		MaxSize:   searchMaxSize,
+	}
+
+	result, err = idx.SearchWithOptions(indexerOpts)
 	if err != nil {
 		return err
 	}
@@ -322,35 +380,76 @@ func runSearch(cmd *cobra.Command, args []string) error {
 
 func runIndexGenerate(cmd *cobra.Command, args []string) error {
 	status, err := client.Reindex()
+	if err == nil {
+		log.Infof("%s", status)
+		return nil
+	}
+
+	cfg := buildConfig()
+
+	idx, err := indexer.New(cfg)
 	if err != nil {
+		return fmt.Errorf("server not running and cannot open index: %v", err)
+	}
+	defer idx.Close()
+
+	log.Infof("starting full reindex...")
+	if err := idx.ReindexAll(); err != nil {
 		return err
 	}
 
-	log.Infof("%s", status)
 	return nil
 }
 
 func runIndexSync(cmd *cobra.Command, args []string) error {
 	status, err := client.Sync()
+	if err == nil {
+		log.Infof("%s", status)
+		return nil
+	}
+
+	cfg := buildConfig()
+
+	idx, err := indexer.New(cfg)
 	if err != nil {
+		return fmt.Errorf("server not running and cannot open index: %v", err)
+	}
+	defer idx.Close()
+
+	log.Infof("starting incremental sync...")
+	if err := idx.SyncIncremental(); err != nil {
 		return err
 	}
 
-	log.Infof("%s", status)
 	return nil
 }
 
 func runIndexStatus(cmd *cobra.Command, args []string) error {
 	stats, err := client.Stats()
-	if err != nil {
-		return err
+	if err == nil {
+		log.Infof("Index Statistics:")
+		log.Infof("  Total files: %v", stats["total_files"])
+		log.Infof("  Total bytes: %v", stats["total_bytes"])
+		log.Infof("  Last index: %v", stats["last_index_time"])
+		log.Infof("  Duration: %v", stats["index_duration"])
+		return nil
 	}
 
+	cfg := buildConfig()
+
+	idx, err := indexer.New(cfg)
+	if err != nil {
+		return fmt.Errorf("server not running and cannot open index: %v", err)
+	}
+	defer idx.Close()
+
+	indexStats := idx.Stats()
+
 	log.Infof("Index Statistics:")
-	log.Infof("  Total files: %v", stats["total_files"])
-	log.Infof("  Total bytes: %v", stats["total_bytes"])
-	log.Infof("  Last index: %v", stats["last_index_time"])
-	log.Infof("  Duration: %v", stats["index_duration"])
+	log.Infof("  Total files: %d", indexStats.TotalFiles)
+	log.Infof("  Total bytes: %d", indexStats.TotalBytes)
+	log.Infof("  Last index: %v", indexStats.LastIndexTime.Format("2006-01-02 15:04:05"))
+	log.Infof("  Duration: %s", indexStats.IndexDuration)
 
 	return nil
 }

@@ -790,6 +790,12 @@ func (i *Indexer) ShouldReindex(intervalHours int) bool {
 	return time.Since(stats.LastIndexTime) >= interval
 }
 
+func (i *Indexer) GetDocCount() (uint64, error) {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.index.DocCount()
+}
+
 func (i *Indexer) Close() error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
