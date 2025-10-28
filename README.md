@@ -32,7 +32,7 @@ A configurable filesystem search service powered by [bleve](https://github.com/b
 Requires [Go](https://go.dev) 1.24+
 
 ```bash
-make && make install && make install-service
+make && sudo make install && make install-service
 ```
 
 ## Usage

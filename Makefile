@@ -3,7 +3,8 @@
 BINARY_NAME=dsearch
 SOURCE_DIR=cmd/dsearch
 BUILD_DIR=bin
-INSTALL_DIR=$(HOME)/.local/bin
+PREFIX ?= /usr/local
+INSTALL_DIR=$(PREFIX)/bin
 SYSTEMD_USER_DIR=$(HOME)/.config/systemd/user
 SERVICE_NAME=dsearch
 
@@ -76,7 +77,7 @@ version: check-go
 	@echo "Build Time: $(BUILD_TIME)"
 	@echo "Commit: $(COMMIT)"
 
-install-service: install
+install-service:
 	@echo "Installing systemd user service..."
 	@mkdir -p $(SYSTEMD_USER_DIR)
 	@cp assets/$(SERVICE_NAME).service $(SYSTEMD_USER_DIR)/$(SERVICE_NAME).service

@@ -5,7 +5,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/dsearch serve
+ExecStart=/usr/local/bin/dsearch serve
 Restart=on-failure
 RestartSec=5s
 
