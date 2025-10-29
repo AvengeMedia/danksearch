@@ -34,15 +34,30 @@ var (
 	httpOnly      bool
 	socketOnly    bool
 
-	searchLimit    int
-	searchField    string
-	searchExt      string
-	searchFuzzy    bool
-	searchSort     string
-	searchSortDesc bool
-	searchMinSize  int64
-	searchMaxSize  int64
-	searchJSON     bool
+	searchLimit           int
+	searchField           string
+	searchExt             string
+	searchFuzzy           bool
+	searchSort            string
+	searchSortDesc        bool
+	searchMinSize         int64
+	searchMaxSize         int64
+	searchJSON            bool
+	searchFolder          string
+	searchExifMake        string
+	searchExifModel       string
+	searchExifDateAfter   string
+	searchExifDateBefore  string
+	searchExifMinISO      int
+	searchExifMaxISO      int
+	searchExifMinAp       float64
+	searchExifMaxAp       float64
+	searchExifMinFocalLen float64
+	searchExifMaxFocalLen float64
+	searchExifLatMin      float64
+	searchExifLatMax      float64
+	searchExifLonMin      float64
+	searchExifLonMax      float64
 )
 
 var rootCmd = &cobra.Command{
@@ -138,11 +153,26 @@ func init() {
 	searchCmd.Flags().StringVarP(&searchField, "field", "f", "", "search specific field (filename, body, title)")
 	searchCmd.Flags().StringVarP(&searchExt, "ext", "e", "", "filter by file extension (e.g., .jpg)")
 	searchCmd.Flags().BoolVar(&searchFuzzy, "fuzzy", false, "enable fuzzy matching for typos")
-	searchCmd.Flags().StringVar(&searchSort, "sort", "score", "sort by: score, mtime, size, filename")
+	searchCmd.Flags().StringVar(&searchSort, "sort", "score", "sort by: score, mtime, size, filename, exif_date, iso, focal_length, aperture")
 	searchCmd.Flags().BoolVar(&searchSortDesc, "desc", true, "sort descending")
 	searchCmd.Flags().Int64Var(&searchMinSize, "min-size", 0, "minimum file size in bytes")
 	searchCmd.Flags().Int64Var(&searchMaxSize, "max-size", 0, "maximum file size in bytes")
 	searchCmd.Flags().BoolVar(&searchJSON, "json", false, "output results in JSON format")
+	searchCmd.Flags().StringVar(&searchFolder, "folder", "", "filter by folder path (e.g., /home/user/Pictures)")
+	searchCmd.Flags().StringVar(&searchExifMake, "exif-make", "", "filter by camera make (e.g., Canon)")
+	searchCmd.Flags().StringVar(&searchExifModel, "exif-model", "", "filter by camera model (e.g., Canon EOS 5D)")
+	searchCmd.Flags().StringVar(&searchExifDateAfter, "exif-date-after", "", "photos taken after date (RFC3339 or EXIF format)")
+	searchCmd.Flags().StringVar(&searchExifDateBefore, "exif-date-before", "", "photos taken before date (RFC3339 or EXIF format)")
+	searchCmd.Flags().IntVar(&searchExifMinISO, "exif-min-iso", 0, "minimum ISO value")
+	searchCmd.Flags().IntVar(&searchExifMaxISO, "exif-max-iso", 0, "maximum ISO value")
+	searchCmd.Flags().Float64Var(&searchExifMinAp, "exif-min-aperture", 0, "minimum aperture (f-number)")
+	searchCmd.Flags().Float64Var(&searchExifMaxAp, "exif-max-aperture", 0, "maximum aperture (f-number)")
+	searchCmd.Flags().Float64Var(&searchExifMinFocalLen, "exif-min-focal-len", 0, "minimum focal length in mm")
+	searchCmd.Flags().Float64Var(&searchExifMaxFocalLen, "exif-max-focal-len", 0, "maximum focal length in mm")
+	searchCmd.Flags().Float64Var(&searchExifLatMin, "exif-lat-min", 0, "minimum GPS latitude")
+	searchCmd.Flags().Float64Var(&searchExifLatMax, "exif-lat-max", 0, "maximum GPS latitude")
+	searchCmd.Flags().Float64Var(&searchExifLonMin, "exif-lon-min", 0, "minimum GPS longitude")
+	searchCmd.Flags().Float64Var(&searchExifLonMax, "exif-lon-max", 0, "maximum GPS longitude")
 
 	indexCmd.AddCommand(indexGenerateCmd)
 	indexCmd.AddCommand(indexSyncCmd)
@@ -304,15 +334,30 @@ func runSearch(cmd *cobra.Command, args []string) error {
 	}
 
 	clientOpts := &client.SearchOptions{
-		Query:     query,
-		Limit:     limit,
-		Field:     searchField,
-		Extension: searchExt,
-		Fuzzy:     searchFuzzy,
-		SortBy:    searchSort,
-		SortDesc:  searchSortDesc,
-		MinSize:   searchMinSize,
-		MaxSize:   searchMaxSize,
+		Query:           query,
+		Limit:           limit,
+		Field:           searchField,
+		Extension:       searchExt,
+		Fuzzy:           searchFuzzy,
+		SortBy:          searchSort,
+		SortDesc:        searchSortDesc,
+		MinSize:         searchMinSize,
+		MaxSize:         searchMaxSize,
+		Folder:          searchFolder,
+		ExifMake:        searchExifMake,
+		ExifModel:       searchExifModel,
+		ExifDateAfter:   searchExifDateAfter,
+		ExifDateBefore:  searchExifDateBefore,
+		ExifMinISO:      searchExifMinISO,
+		ExifMaxISO:      searchExifMaxISO,
+		ExifMinAperture: searchExifMinAp,
+		ExifMaxAperture: searchExifMaxAp,
+		ExifMinFocalLen: searchExifMinFocalLen,
+		ExifMaxFocalLen: searchExifMaxFocalLen,
+		ExifLatMin:      searchExifLatMin,
+		ExifLatMax:      searchExifLatMax,
+		ExifLonMin:      searchExifLonMin,
+		ExifLonMax:      searchExifLonMax,
 	}
 
 	result, err := client.SearchWithOptions(clientOpts)
@@ -348,15 +393,30 @@ func runSearch(cmd *cobra.Command, args []string) error {
 	}
 
 	indexerOpts := &indexer.SearchOptions{
-		Query:     query,
-		Limit:     limit,
-		Field:     searchField,
-		Extension: searchExt,
-		Fuzzy:     searchFuzzy,
-		SortBy:    searchSort,
-		SortDesc:  searchSortDesc,
-		MinSize:   searchMinSize,
-		MaxSize:   searchMaxSize,
+		Query:           query,
+		Limit:           limit,
+		Field:           searchField,
+		Extension:       searchExt,
+		Fuzzy:           searchFuzzy,
+		SortBy:          searchSort,
+		SortDesc:        searchSortDesc,
+		MinSize:         searchMinSize,
+		MaxSize:         searchMaxSize,
+		Folder:          searchFolder,
+		ExifMake:        searchExifMake,
+		ExifModel:       searchExifModel,
+		ExifDateAfter:   searchExifDateAfter,
+		ExifDateBefore:  searchExifDateBefore,
+		ExifMinISO:      searchExifMinISO,
+		ExifMaxISO:      searchExifMaxISO,
+		ExifMinAperture: searchExifMinAp,
+		ExifMaxAperture: searchExifMaxAp,
+		ExifMinFocalLen: searchExifMinFocalLen,
+		ExifMaxFocalLen: searchExifMaxFocalLen,
+		ExifLatMin:      searchExifLatMin,
+		ExifLatMax:      searchExifLatMax,
+		ExifLonMin:      searchExifLonMin,
+		ExifLonMax:      searchExifLonMax,
 	}
 
 	result, err = idx.SearchWithOptions(indexerOpts)

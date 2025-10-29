@@ -16,6 +16,7 @@ type IndexPath struct {
 	MaxDepth      int      `toml:"max_depth"`
 	ExcludeHidden bool     `toml:"exclude_hidden"`
 	ExcludeDirs   []string `toml:"exclude_dirs"`
+	ExtractExif   bool     `toml:"extract_exif"`
 
 	excludeDirsMap map[string]bool
 }
@@ -132,6 +133,7 @@ func Default() *Config {
 				MaxDepth:      6,
 				ExcludeHidden: true,
 				ExcludeDirs:   defaultExcludeDirs,
+				ExtractExif:   true,
 			},
 		},
 		TextExts: []string{

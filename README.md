@@ -16,7 +16,7 @@
 
 # dsearch
 
-A configurable filesystem search service powered by [bleve](https://github.com/blevesearch/bleve) for GNU/Linux.
+A configurable filesystem search service powered by [bleve](https://github.com/blevesearch/bleve) for Unix-based operating systems.
 
 ## Features
 
@@ -24,6 +24,8 @@ A configurable filesystem search service powered by [bleve](https://github.com/b
 - **Configuration** - Configure exclusions, depth, etc.
 - **Fuzzy search** - Typo-tolerant search queries
 - **Text content extraction** - Optionally extracts and indexes content from text-based files
+- **EXIF metadata** - Extracts and indexes EXIF data from image files for advanced search
+- **Virtual folders** - Search within specific directories
 - **Concurrent indexing** - Multi-worker parallel indexing for fast performance
 - **Real-time updates** - File watcher for incremental index updates
 
@@ -62,6 +64,32 @@ dsearch search "typo" --fuzzy
 dsearch search "*" --sort mtime --desc
 # Scores content higher than filenames
 dsearch search --field body mountain
+
+# Virtual folder search
+dsearch search "*" --folder /home/user/Pictures
+
+# EXIF metadata search and filtering
+dsearch search "*" --ext .jpg --exif-make Canon
+dsearch search "*" --exif-model "Canon EOS 5D"
+dsearch search "*" --folder /home/user/Photos --exif-make Nikon
+
+# Sort photos by date taken (newest first)
+dsearch search "*" --ext .jpg --sort exif_date --desc
+
+# Find photos by ISO range (low-light shots)
+dsearch search "*" --exif-min-iso 1600 --exif-max-iso 6400
+
+# Find portrait shots (focal length range)
+dsearch search "*" --exif-min-focal-len 50 --exif-max-focal-len 135
+
+# Find wide aperture shots (shallow depth of field)
+dsearch search "*" --exif-min-aperture 1.4 --exif-max-aperture 2.8
+
+# Photos taken in date range
+dsearch search "*" --exif-date-after "2024-06-01T00:00:00Z" --exif-date-before "2024-08-31T23:59:59Z"
+
+# GPS location filtering (bounding box)
+dsearch search "*" --exif-lat-min 40.0 --exif-lat-max 41.0 --exif-lon-min -74.0 --exif-lon-max -73.0
 ```
 
 For all options:

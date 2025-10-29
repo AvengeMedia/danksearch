@@ -107,18 +107,33 @@ func sendRequest(method string, params map[string]interface{}) (json.RawMessage,
 }
 
 type SearchOptions struct {
-	Query         string
-	Limit         int
-	Field         string
-	ContentType   string
-	Extension     string
-	Fuzzy         bool
-	SortBy        string
-	SortDesc      bool
-	MinSize       int64
-	MaxSize       int64
-	ModifiedAfter string
-	Facets        []string
+	Query           string
+	Limit           int
+	Field           string
+	ContentType     string
+	Extension       string
+	Fuzzy           bool
+	SortBy          string
+	SortDesc        bool
+	MinSize         int64
+	MaxSize         int64
+	ModifiedAfter   string
+	Facets          []string
+	Folder          string
+	ExifMake        string
+	ExifModel       string
+	ExifDateAfter   string
+	ExifDateBefore  string
+	ExifMinISO      int
+	ExifMaxISO      int
+	ExifMinAperture float64
+	ExifMaxAperture float64
+	ExifMinFocalLen float64
+	ExifMaxFocalLen float64
+	ExifLatMin      float64
+	ExifLatMax      float64
+	ExifLonMin      float64
+	ExifLonMax      float64
 }
 
 func Search(query string, limit int) (*bleve.SearchResult, error) {
@@ -164,6 +179,51 @@ func SearchWithOptions(opts *SearchOptions) (*bleve.SearchResult, error) {
 	}
 	if len(opts.Facets) > 0 {
 		params["facets"] = opts.Facets
+	}
+	if opts.Folder != "" {
+		params["folder"] = opts.Folder
+	}
+	if opts.ExifMake != "" {
+		params["exif_make"] = opts.ExifMake
+	}
+	if opts.ExifModel != "" {
+		params["exif_model"] = opts.ExifModel
+	}
+	if opts.ExifDateAfter != "" {
+		params["exif_date_after"] = opts.ExifDateAfter
+	}
+	if opts.ExifDateBefore != "" {
+		params["exif_date_before"] = opts.ExifDateBefore
+	}
+	if opts.ExifMinISO > 0 {
+		params["exif_min_iso"] = opts.ExifMinISO
+	}
+	if opts.ExifMaxISO > 0 {
+		params["exif_max_iso"] = opts.ExifMaxISO
+	}
+	if opts.ExifMinAperture > 0 {
+		params["exif_min_aperture"] = opts.ExifMinAperture
+	}
+	if opts.ExifMaxAperture > 0 {
+		params["exif_max_aperture"] = opts.ExifMaxAperture
+	}
+	if opts.ExifMinFocalLen > 0 {
+		params["exif_min_focal_len"] = opts.ExifMinFocalLen
+	}
+	if opts.ExifMaxFocalLen > 0 {
+		params["exif_max_focal_len"] = opts.ExifMaxFocalLen
+	}
+	if opts.ExifLatMin != 0 {
+		params["exif_lat_min"] = opts.ExifLatMin
+	}
+	if opts.ExifLatMax != 0 {
+		params["exif_lat_max"] = opts.ExifLatMax
+	}
+	if opts.ExifLonMin != 0 {
+		params["exif_lon_min"] = opts.ExifLonMin
+	}
+	if opts.ExifLonMax != 0 {
+		params["exif_lon_max"] = opts.ExifLonMax
 	}
 
 	result, err := sendRequest("search", params)

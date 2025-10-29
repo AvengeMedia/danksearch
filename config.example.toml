@@ -36,6 +36,7 @@ text_extensions = [
 path = "/home/brandon"
 max_depth = 6  # Default depth for home directory
 exclude_hidden = true
+extract_exif = true  # Extract EXIF metadata from images
 exclude_dirs = [
     "node_modules", "bower_components", "__pycache__", "site-packages",
     "venv", ".venv", "target", "dist", "build", "vendor", ".cache"
@@ -45,6 +46,7 @@ exclude_dirs = [
 path = "/home/brandon/repos"
 max_depth = 6  # Go deeper for repos directory
 exclude_hidden = true
+extract_exif = false  # Skip EXIF extraction for code repos
 exclude_dirs = [
     "node_modules", "bower_components", "__pycache__", "site-packages",
     "venv", ".venv", "target", "dist", "build", "vendor", ".cache",
@@ -55,4 +57,5 @@ exclude_dirs = [
 path = "/home/brandon/Documents"
 max_depth = 0  # Unlimited depth for Documents
 exclude_hidden = false  # Include hidden files in Documents
+extract_exif = true  # Extract EXIF metadata from images
 exclude_dirs = []

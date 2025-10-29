@@ -30,18 +30,33 @@ type Server struct {
 }
 
 type SearchInput struct {
-	Query         string   `query:"q" minLength:"1" doc:"Search query" example:"mountain"`
-	Limit         int      `query:"limit" default:"10" minimum:"1" maximum:"500" doc:"Maximum results"`
-	Field         string   `query:"field" enum:"filename,body" doc:"Search specific field (empty for all)"`
-	ContentType   string   `query:"content_type" doc:"Filter by MIME type" example:"image/jpeg"`
-	Extension     string   `query:"ext" doc:"Filter by file extension" example:".jpg"`
-	Fuzzy         bool     `query:"fuzzy" doc:"Enable fuzzy matching for typos"`
-	SortBy        string   `query:"sort" enum:"score,mtime,size,filename," default:"score" doc:"Sort results by field"`
-	SortDesc      bool     `query:"desc" default:"true" doc:"Sort descending"`
-	MinSize       int64    `query:"min_size" doc:"Minimum file size in bytes"`
-	MaxSize       int64    `query:"max_size" doc:"Maximum file size in bytes"`
-	ModifiedAfter string   `query:"modified_after" doc:"Filter by modification date (RFC3339)" example:"2024-01-01T00:00:00Z"`
-	Facets        []string `query:"facets" doc:"Enable facets for fields" example:"content_type"`
+	Query           string   `query:"q" minLength:"1" doc:"Search query" example:"mountain"`
+	Limit           int      `query:"limit" default:"10" minimum:"1" maximum:"500" doc:"Maximum results"`
+	Field           string   `query:"field" enum:"filename,body" doc:"Search specific field (empty for all)"`
+	ContentType     string   `query:"content_type" doc:"Filter by MIME type" example:"image/jpeg"`
+	Extension       string   `query:"ext" doc:"Filter by file extension" example:".jpg"`
+	Fuzzy           bool     `query:"fuzzy" doc:"Enable fuzzy matching for typos"`
+	SortBy          string   `query:"sort" enum:"score,mtime,size,filename,exif_date,iso,focal_length,aperture," default:"score" doc:"Sort results by field"`
+	SortDesc        bool     `query:"desc" default:"true" doc:"Sort descending"`
+	MinSize         int64    `query:"min_size" doc:"Minimum file size in bytes"`
+	MaxSize         int64    `query:"max_size" doc:"Maximum file size in bytes"`
+	ModifiedAfter   string   `query:"modified_after" doc:"Filter by modification date (RFC3339)" example:"2024-01-01T00:00:00Z"`
+	Facets          []string `query:"facets" doc:"Enable facets for fields" example:"content_type"`
+	Folder          string   `query:"folder" doc:"Filter by folder path" example:"/home/user/Pictures"`
+	ExifMake        string   `query:"exif_make" doc:"Filter by camera make" example:"Canon"`
+	ExifModel       string   `query:"exif_model" doc:"Filter by camera model" example:"Canon EOS 5D"`
+	ExifDateAfter   string   `query:"exif_date_after" doc:"Photos taken after date" example:"2024-01-01T00:00:00Z"`
+	ExifDateBefore  string   `query:"exif_date_before" doc:"Photos taken before date" example:"2024-12-31T23:59:59Z"`
+	ExifMinISO      int      `query:"exif_min_iso" doc:"Minimum ISO value" example:"100"`
+	ExifMaxISO      int      `query:"exif_max_iso" doc:"Maximum ISO value" example:"3200"`
+	ExifMinAperture float64  `query:"exif_min_aperture" doc:"Minimum aperture (f-number)" example:"1.8"`
+	ExifMaxAperture float64  `query:"exif_max_aperture" doc:"Maximum aperture (f-number)" example:"16"`
+	ExifMinFocalLen float64  `query:"exif_min_focal_len" doc:"Minimum focal length in mm" example:"24"`
+	ExifMaxFocalLen float64  `query:"exif_max_focal_len" doc:"Maximum focal length in mm" example:"200"`
+	ExifLatMin      float64  `query:"exif_lat_min" doc:"Minimum GPS latitude" example:"40.0"`
+	ExifLatMax      float64  `query:"exif_lat_max" doc:"Maximum GPS latitude" example:"41.0"`
+	ExifLonMin      float64  `query:"exif_lon_min" doc:"Minimum GPS longitude" example:"-74.0"`
+	ExifLonMax      float64  `query:"exif_lon_max" doc:"Maximum GPS longitude" example:"-73.0"`
 }
 
 type SearchOutput struct {
@@ -80,18 +95,33 @@ func RegisterHandlers(srv *Server, api huma.API) {
 		Tags:        []string{"Search"},
 	}, func(ctx context.Context, input *SearchInput) (*SearchOutput, error) {
 		opts := &indexer.SearchOptions{
-			Query:         input.Query,
-			Limit:         input.Limit,
-			Field:         input.Field,
-			ContentType:   input.ContentType,
-			Extension:     input.Extension,
-			Fuzzy:         input.Fuzzy,
-			SortBy:        input.SortBy,
-			SortDesc:      input.SortDesc,
-			MinSize:       input.MinSize,
-			MaxSize:       input.MaxSize,
-			ModifiedAfter: input.ModifiedAfter,
-			Facets:        input.Facets,
+			Query:           input.Query,
+			Limit:           input.Limit,
+			Field:           input.Field,
+			ContentType:     input.ContentType,
+			Extension:       input.Extension,
+			Fuzzy:           input.Fuzzy,
+			SortBy:          input.SortBy,
+			SortDesc:        input.SortDesc,
+			MinSize:         input.MinSize,
+			MaxSize:         input.MaxSize,
+			ModifiedAfter:   input.ModifiedAfter,
+			Facets:          input.Facets,
+			Folder:          input.Folder,
+			ExifMake:        input.ExifMake,
+			ExifModel:       input.ExifModel,
+			ExifDateAfter:   input.ExifDateAfter,
+			ExifDateBefore:  input.ExifDateBefore,
+			ExifMinISO:      input.ExifMinISO,
+			ExifMaxISO:      input.ExifMaxISO,
+			ExifMinAperture: input.ExifMinAperture,
+			ExifMaxAperture: input.ExifMaxAperture,
+			ExifMinFocalLen: input.ExifMinFocalLen,
+			ExifMaxFocalLen: input.ExifMaxFocalLen,
+			ExifLatMin:      input.ExifLatMin,
+			ExifLatMax:      input.ExifLatMax,
+			ExifLonMin:      input.ExifLonMin,
+			ExifLonMax:      input.ExifLonMax,
 		}
 
 		result, err := srv.Indexer.SearchWithOptions(opts)

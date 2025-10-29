@@ -23,6 +23,7 @@ import (
 	_ "github.com/blevesearch/bleve/v2/analysis/tokenizer/single"
 	"github.com/blevesearch/bleve/v2/mapping"
 	query "github.com/blevesearch/bleve/v2/search/query"
+	"github.com/rwcarlsen/goexif/exif"
 )
 
 type Document struct {
@@ -35,6 +36,15 @@ type Document struct {
 	ModTime        time.Time `json:"mtime"`
 	Size           int64     `json:"size"`
 	Hash           string    `json:"hash"`
+	ExifMake       string    `json:"exif_make,omitempty"`
+	ExifModel      string    `json:"exif_model,omitempty"`
+	ExifDateTime   string    `json:"exif_datetime,omitempty"`
+	ExifLatitude   float64   `json:"exif_latitude,omitempty"`
+	ExifLongitude  float64   `json:"exif_longitude,omitempty"`
+	ExifISO        int       `json:"exif_iso,omitempty"`
+	ExifFNumber    float64   `json:"exif_fnumber,omitempty"`
+	ExifExposure   string    `json:"exif_exposure,omitempty"`
+	ExifFocalLen   float64   `json:"exif_focal_length,omitempty"`
 }
 
 type Indexer struct {
@@ -45,18 +55,33 @@ type Indexer struct {
 }
 
 type SearchOptions struct {
-	Query         string   `json:"query"`
-	Limit         int      `json:"limit"`
-	Field         string   `json:"field,omitempty"`          // filename, body, title, or empty for all
-	ContentType   string   `json:"content_type,omitempty"`   // filter by mime type
-	Extension     string   `json:"extension,omitempty"`      // filter by extension
-	Fuzzy         bool     `json:"fuzzy,omitempty"`          // enable fuzzy matching
-	SortBy        string   `json:"sort_by,omitempty"`        // score, mtime, size, filename
-	SortDesc      bool     `json:"sort_desc,omitempty"`      // sort descending
-	MinSize       int64    `json:"min_size,omitempty"`       // minimum file size
-	MaxSize       int64    `json:"max_size,omitempty"`       // maximum file size
-	ModifiedAfter string   `json:"modified_after,omitempty"` // RFC3339 timestamp
-	Facets        []string `json:"facets,omitempty"`         // facet fields: content_type, extension
+	Query           string   `json:"query"`
+	Limit           int      `json:"limit"`
+	Field           string   `json:"field,omitempty"`
+	ContentType     string   `json:"content_type,omitempty"`
+	Extension       string   `json:"extension,omitempty"`
+	Fuzzy           bool     `json:"fuzzy,omitempty"`
+	SortBy          string   `json:"sort_by,omitempty"`
+	SortDesc        bool     `json:"sort_desc,omitempty"`
+	MinSize         int64    `json:"min_size,omitempty"`
+	MaxSize         int64    `json:"max_size,omitempty"`
+	ModifiedAfter   string   `json:"modified_after,omitempty"`
+	Facets          []string `json:"facets,omitempty"`
+	Folder          string   `json:"folder,omitempty"`
+	ExifMake        string   `json:"exif_make,omitempty"`
+	ExifModel       string   `json:"exif_model,omitempty"`
+	ExifDateAfter   string   `json:"exif_date_after,omitempty"`
+	ExifDateBefore  string   `json:"exif_date_before,omitempty"`
+	ExifMinISO      int      `json:"exif_min_iso,omitempty"`
+	ExifMaxISO      int      `json:"exif_max_iso,omitempty"`
+	ExifMinAperture float64  `json:"exif_min_aperture,omitempty"`
+	ExifMaxAperture float64  `json:"exif_max_aperture,omitempty"`
+	ExifMinFocalLen float64  `json:"exif_min_focal_len,omitempty"`
+	ExifMaxFocalLen float64  `json:"exif_max_focal_len,omitempty"`
+	ExifLatMin      float64  `json:"exif_lat_min,omitempty"`
+	ExifLatMax      float64  `json:"exif_lat_max,omitempty"`
+	ExifLonMin      float64  `json:"exif_lon_min,omitempty"`
+	ExifLonMax      float64  `json:"exif_lon_max,omitempty"`
 }
 
 func New(cfg *config.Config) (*Indexer, error) {
@@ -118,7 +143,16 @@ func getStoreConfig() map[string]interface{} {
 func buildIndexMapping() mapping.IndexMapping {
 	m := bleve.NewIndexMapping()
 
-	err := m.AddCustomTokenFilter("ngram_2_15", map[string]interface{}{
+	err := m.AddCustomAnalyzer("keyword_lc", map[string]interface{}{
+		"type":          "custom",
+		"tokenizer":     "single",
+		"token_filters": []string{"to_lower"},
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	err = m.AddCustomTokenFilter("ngram_2_15", map[string]interface{}{
 		"type": "ngram",
 		"min":  float64(2),
 		"max":  float64(15),
@@ -163,8 +197,9 @@ func buildIndexMapping() mapping.IndexMapping {
 	docMapping := bleve.NewDocumentMapping()
 
 	pathField := bleve.NewTextFieldMapping()
-	pathField.Analyzer = "keyword"
+	pathField.Analyzer = "keyword_lc"
 	pathField.Store = true
+	pathField.IncludeInAll = false
 	docMapping.AddFieldMappingsAt("path", pathField)
 
 	filenameField := bleve.NewTextFieldMapping()
@@ -203,6 +238,46 @@ func buildIndexMapping() mapping.IndexMapping {
 	hashField.Store = true
 	hashField.Analyzer = "keyword"
 	docMapping.AddFieldMappingsAt("hash", hashField)
+
+	exifMakeField := bleve.NewTextFieldMapping()
+	exifMakeField.Store = true
+	exifMakeField.Analyzer = "keyword_lc"
+	exifMakeField.IncludeInAll = false
+	docMapping.AddFieldMappingsAt("exif_make", exifMakeField)
+
+	exifModelField := bleve.NewTextFieldMapping()
+	exifModelField.Store = true
+	exifModelField.Analyzer = "keyword_lc"
+	exifModelField.IncludeInAll = false
+	docMapping.AddFieldMappingsAt("exif_model", exifModelField)
+
+	exifDateTimeField := bleve.NewTextFieldMapping()
+	exifDateTimeField.Store = true
+	docMapping.AddFieldMappingsAt("exif_datetime", exifDateTimeField)
+
+	exifLatField := bleve.NewNumericFieldMapping()
+	exifLatField.Store = true
+	docMapping.AddFieldMappingsAt("exif_latitude", exifLatField)
+
+	exifLonField := bleve.NewNumericFieldMapping()
+	exifLonField.Store = true
+	docMapping.AddFieldMappingsAt("exif_longitude", exifLonField)
+
+	exifISOField := bleve.NewNumericFieldMapping()
+	exifISOField.Store = true
+	docMapping.AddFieldMappingsAt("exif_iso", exifISOField)
+
+	exifFNumField := bleve.NewNumericFieldMapping()
+	exifFNumField.Store = true
+	docMapping.AddFieldMappingsAt("exif_fnumber", exifFNumField)
+
+	exifExpField := bleve.NewTextFieldMapping()
+	exifExpField.Store = true
+	docMapping.AddFieldMappingsAt("exif_exposure", exifExpField)
+
+	exifFocalField := bleve.NewNumericFieldMapping()
+	exifFocalField.Store = true
+	docMapping.AddFieldMappingsAt("exif_focal_length", exifFocalField)
 
 	m.DefaultMapping = docMapping
 	return m
@@ -283,7 +358,75 @@ func (i *Indexer) readDocument(path string, info os.FileInfo) (*Document, error)
 		doc.Hash = hex.EncodeToString(hash[:])
 	}
 
+	if isImageFile(contentType) {
+		i.extractExifData(path, doc)
+	}
+
 	return doc, nil
+}
+
+func isImageFile(contentType string) bool {
+	return strings.HasPrefix(contentType, "image/")
+}
+
+func (i *Indexer) extractExifData(path string, doc *Document) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	x, err := exif.Decode(f)
+	if err != nil {
+		return
+	}
+
+	if make, err := x.Get(exif.Make); err == nil {
+		if makeStr, err := make.StringVal(); err == nil {
+			doc.ExifMake = makeStr
+		}
+	}
+
+	if model, err := x.Get(exif.Model); err == nil {
+		if modelStr, err := model.StringVal(); err == nil {
+			doc.ExifModel = modelStr
+		}
+	}
+
+	if dateTime, err := x.Get(exif.DateTime); err == nil {
+		if dtStr, err := dateTime.StringVal(); err == nil {
+			doc.ExifDateTime = dtStr
+		}
+	}
+
+	if lat, lon, err := x.LatLong(); err == nil {
+		doc.ExifLatitude = lat
+		doc.ExifLongitude = lon
+	}
+
+	if isoSpeed, err := x.Get(exif.ISOSpeedRatings); err == nil {
+		if isoInt, err := isoSpeed.Int(0); err == nil {
+			doc.ExifISO = isoInt
+		}
+	}
+
+	if fNumber, err := x.Get(exif.FNumber); err == nil {
+		if num, denom, err := fNumber.Rat2(0); err == nil && denom != 0 {
+			doc.ExifFNumber = float64(num) / float64(denom)
+		}
+	}
+
+	if expTime, err := x.Get(exif.ExposureTime); err == nil {
+		if _, _, err := expTime.Rat2(0); err == nil {
+			doc.ExifExposure = expTime.String()
+		}
+	}
+
+	if focalLen, err := x.Get(exif.FocalLength); err == nil {
+		if num, denom, err := focalLen.Rat2(0); err == nil && denom != 0 {
+			doc.ExifFocalLen = float64(num) / float64(denom)
+		}
+	}
 }
 
 func (i *Indexer) Delete(path string) error {
@@ -317,7 +460,7 @@ func (i *Indexer) SearchWithOptions(opts *SearchOptions) (*bleve.SearchResult, e
 	// Build the main query
 	var mainQuery query.Query
 
-	if opts.Query == "*" {
+	if opts.Query == "*" || opts.Query == "" {
 		mainQuery = bleve.NewMatchAllQuery()
 	} else if opts.Field != "" {
 		mainQuery = i.buildFieldQuery(opts.Query, opts.Field, opts.Fuzzy)
@@ -368,6 +511,116 @@ func (i *Indexer) SearchWithOptions(opts *SearchOptions) (*bleve.SearchResult, e
 		}
 	}
 
+	if opts.Folder != "" {
+		folderPrefix := strings.TrimRight(opts.Folder, "/") + "/"
+		folderPrefix = strings.ToLower(folderPrefix)
+		folderQuery := bleve.NewPrefixQuery(folderPrefix)
+		folderQuery.SetField("path")
+		filters = append(filters, folderQuery)
+	}
+
+	if opts.ExifMake != "" {
+		exifMakeQuery := bleve.NewTermQuery(strings.ToLower(opts.ExifMake))
+		exifMakeQuery.SetField("exif_make")
+		filters = append(filters, exifMakeQuery)
+	}
+
+	if opts.ExifModel != "" {
+		exifModelQuery := bleve.NewTermQuery(strings.ToLower(opts.ExifModel))
+		exifModelQuery.SetField("exif_model")
+		filters = append(filters, exifModelQuery)
+	}
+
+	if opts.ExifDateAfter != "" || opts.ExifDateBefore != "" {
+		var minTime, maxTime *time.Time
+		if opts.ExifDateAfter != "" {
+			if t, err := time.Parse("2006:01:02 15:04:05", opts.ExifDateAfter); err == nil {
+				minTime = &t
+			} else if t, err := time.Parse(time.RFC3339, opts.ExifDateAfter); err == nil {
+				minTime = &t
+			}
+		}
+		if opts.ExifDateBefore != "" {
+			if t, err := time.Parse("2006:01:02 15:04:05", opts.ExifDateBefore); err == nil {
+				maxTime = &t
+			} else if t, err := time.Parse(time.RFC3339, opts.ExifDateBefore); err == nil {
+				maxTime = &t
+			}
+		}
+		if minTime != nil || maxTime != nil {
+			dateQuery := bleve.NewDateRangeInclusiveQuery(*minTime, *maxTime, nil, nil)
+			dateQuery.SetField("exif_datetime")
+			filters = append(filters, dateQuery)
+		}
+	}
+
+	if opts.ExifMinISO > 0 || opts.ExifMaxISO > 0 {
+		var minISO, maxISO *float64
+		if opts.ExifMinISO > 0 {
+			v := float64(opts.ExifMinISO)
+			minISO = &v
+		}
+		if opts.ExifMaxISO > 0 {
+			v := float64(opts.ExifMaxISO)
+			maxISO = &v
+		}
+		isoQuery := bleve.NewNumericRangeInclusiveQuery(minISO, maxISO, nil, nil)
+		isoQuery.SetField("exif_iso")
+		filters = append(filters, isoQuery)
+	}
+
+	if opts.ExifMinAperture > 0 || opts.ExifMaxAperture > 0 {
+		var minAp, maxAp *float64
+		if opts.ExifMinAperture > 0 {
+			minAp = &opts.ExifMinAperture
+		}
+		if opts.ExifMaxAperture > 0 {
+			maxAp = &opts.ExifMaxAperture
+		}
+		apQuery := bleve.NewNumericRangeInclusiveQuery(minAp, maxAp, nil, nil)
+		apQuery.SetField("exif_fnumber")
+		filters = append(filters, apQuery)
+	}
+
+	if opts.ExifMinFocalLen > 0 || opts.ExifMaxFocalLen > 0 {
+		var minFL, maxFL *float64
+		if opts.ExifMinFocalLen > 0 {
+			minFL = &opts.ExifMinFocalLen
+		}
+		if opts.ExifMaxFocalLen > 0 {
+			maxFL = &opts.ExifMaxFocalLen
+		}
+		flQuery := bleve.NewNumericRangeInclusiveQuery(minFL, maxFL, nil, nil)
+		flQuery.SetField("exif_focal_length")
+		filters = append(filters, flQuery)
+	}
+
+	if opts.ExifLatMin != 0 || opts.ExifLatMax != 0 {
+		var minLat, maxLat *float64
+		if opts.ExifLatMin != 0 {
+			minLat = &opts.ExifLatMin
+		}
+		if opts.ExifLatMax != 0 {
+			maxLat = &opts.ExifLatMax
+		}
+		latQuery := bleve.NewNumericRangeInclusiveQuery(minLat, maxLat, nil, nil)
+		latQuery.SetField("exif_latitude")
+		filters = append(filters, latQuery)
+	}
+
+	if opts.ExifLonMin != 0 || opts.ExifLonMax != 0 {
+		var minLon, maxLon *float64
+		if opts.ExifLonMin != 0 {
+			minLon = &opts.ExifLonMin
+		}
+		if opts.ExifLonMax != 0 {
+			maxLon = &opts.ExifLonMax
+		}
+		lonQuery := bleve.NewNumericRangeInclusiveQuery(minLon, maxLon, nil, nil)
+		lonQuery.SetField("exif_longitude")
+		filters = append(filters, lonQuery)
+	}
+
 	// Combine main query with filters
 	var finalQuery query.Query
 	if len(filters) > 0 {
@@ -411,6 +664,30 @@ func (i *Indexer) SearchWithOptions(opts *SearchOptions) (*bleve.SearchResult, e
 			req.SortBy([]string{"-filename"})
 		} else {
 			req.SortBy([]string{"filename"})
+		}
+	case "exif_date", "exif_datetime":
+		if opts.SortDesc {
+			req.SortBy([]string{"-exif_datetime"})
+		} else {
+			req.SortBy([]string{"exif_datetime"})
+		}
+	case "exif_iso", "iso":
+		if opts.SortDesc {
+			req.SortBy([]string{"-exif_iso"})
+		} else {
+			req.SortBy([]string{"exif_iso"})
+		}
+	case "exif_focal_length", "focal_length":
+		if opts.SortDesc {
+			req.SortBy([]string{"-exif_focal_length"})
+		} else {
+			req.SortBy([]string{"exif_focal_length"})
+		}
+	case "exif_fnumber", "aperture":
+		if opts.SortDesc {
+			req.SortBy([]string{"-exif_fnumber"})
+		} else {
+			req.SortBy([]string{"exif_fnumber"})
 		}
 	default: // score
 		req.SortBy([]string{"-_score"})
