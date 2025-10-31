@@ -763,6 +763,28 @@ func (i *Indexer) buildFieldQuery(queryStr, field string, fuzzy bool) query.Quer
 func (i *Indexer) ReindexAll() error {
 	start := time.Now()
 
+	i.mu.Lock()
+	indexPath := i.config.IndexPath
+	if err := i.index.Close(); err != nil {
+		i.mu.Unlock()
+		return errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, "failed to close index", err)
+	}
+	i.mu.Unlock()
+
+	if err := os.RemoveAll(indexPath); err != nil {
+		return errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, "failed to remove index", err)
+	}
+
+	newIndex, err := openOrCreateIndex(indexPath)
+	if err != nil {
+		return errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, "failed to create new index", err)
+	}
+
+	i.mu.Lock()
+	i.index = newIndex
+	i.indexComplete.Store(false)
+	i.mu.Unlock()
+
 	var totalFiles int64
 	var totalBytes int64
 	var mu sync.Mutex
