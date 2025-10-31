@@ -167,6 +167,16 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 	if event.Op&fsnotify.Create == fsnotify.Create {
 		info, err := os.Stat(path)
 		if err == nil && info.IsDir() {
+			if !w.config.ShouldIndexDir(path) {
+				return
+			}
+
+			depth := w.config.GetDepth(path)
+			maxDepth := w.config.GetMaxDepth(path)
+			if maxDepth > 0 && depth >= maxDepth {
+				return
+			}
+
 			if err := w.watcher.Add(path); err != nil {
 				log.Debugf("failed to watch new dir %s: %v", path, err)
 			}
