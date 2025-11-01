@@ -22,15 +22,13 @@ type IndexPath struct {
 }
 
 type Config struct {
-	IndexPath            string      `toml:"index_path"`
-	ListenAddr           string      `toml:"listen_addr"`
-	MaxFileBytes         int64       `toml:"max_file_bytes"`
-	WorkerCount          int         `toml:"worker_count"`
-	IndexPaths           []IndexPath `toml:"index_paths"`
-	TextExts             []string    `toml:"text_extensions"`
-	IndexAllFiles        bool        `toml:"index_all_files"`
-	AutoReindex          bool        `toml:"auto_reindex"`
-	ReindexIntervalHours int         `toml:"reindex_interval_hours"`
+	IndexPath     string      `toml:"index_path"`
+	ListenAddr    string      `toml:"listen_addr"`
+	MaxFileBytes  int64       `toml:"max_file_bytes"`
+	WorkerCount   int         `toml:"worker_count"`
+	IndexPaths    []IndexPath `toml:"index_paths"`
+	TextExts      []string    `toml:"text_extensions"`
+	IndexAllFiles bool        `toml:"index_all_files"`
 
 	RootDir       string   `toml:"root_dir,omitempty"`
 	MaxDepth      int      `toml:"max_depth,omitempty"`
@@ -120,13 +118,11 @@ func Default() *Config {
 	}
 
 	cfg := &Config{
-		IndexPath:            getDefaultIndexPath(),
-		ListenAddr:           ":43654",
-		MaxFileBytes:         2 * 1024 * 1024,
-		WorkerCount:          workerCount,
-		IndexAllFiles:        true,
-		AutoReindex:          false,
-		ReindexIntervalHours: 24,
+		IndexPath:     getDefaultIndexPath(),
+		ListenAddr:    ":43654",
+		MaxFileBytes:  2 * 1024 * 1024,
+		WorkerCount:   workerCount,
+		IndexAllFiles: true,
 		IndexPaths: []IndexPath{
 			{
 				Path:          home,

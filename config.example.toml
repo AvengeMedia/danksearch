@@ -17,12 +17,6 @@ worker_count = 4
 # Index all file types (not just text files)
 index_all_files = true
 
-# Auto re-index on startup if due (default: false)
-auto_reindex = false
-
-# Re-index interval in hours (0 = disable periodic re-indexing)
-reindex_interval_hours = 24
-
 # File extensions to extract text content from
 text_extensions = [
     ".txt", ".md", ".go", ".py", ".js", ".ts",

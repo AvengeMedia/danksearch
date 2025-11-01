@@ -249,13 +249,6 @@ func runServe(cmd *cobra.Command, args []string) error {
 				log.Infof("initial index build complete")
 			}
 		}()
-	} else if cfg.AutoReindex && idx.ShouldReindex(cfg.ReindexIntervalHours) {
-		log.Infof("auto-reindex triggered (interval: %d hours)", cfg.ReindexIntervalHours)
-		go func() {
-			if err := idx.ReindexAll(); err != nil {
-				log.Errorf("auto-reindex failed: %v", err)
-			}
-		}()
 	}
 
 	w, err := watcher.New(idx, cfg)

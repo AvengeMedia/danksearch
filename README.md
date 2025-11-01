@@ -1,22 +1,27 @@
 <div align="center">
+  <a href="https://danklinux.com">
+    <img src="assets/danklogo.svg" alt="dsearch" width="200">
+  </a>
 
-<img src="assets/dank.svg" alt="DANK" width="400">
+  # dsearch
 
-</div>
+  ### Fast, configurable filesystem search with fuzzy matching
 
-<div align=center>
-
+[![Documentation](https://img.shields.io/badge/docs-danklinux.com-9ccbfb?style=for-the-badge&labelColor=101418)](https://danklinux.com/docs/danksearch)
 [![GitHub stars](https://img.shields.io/github/stars/AvengeMedia/danksearch?style=for-the-badge&labelColor=101418&color=ffd700)](https://github.com/AvengeMedia/danksearch/stargazers)
-[![GitHub License](https://img.shields.io/github/license/AvengeMedia/danksearch?style=for-the-badge&labelColor=101418&color=b9c8da)](https://github.com/AvengeMedia/danksearch/blob/master/LICENSE)
 [![GitHub release](https://img.shields.io/github/v/release/AvengeMedia/danksearch?style=for-the-badge&labelColor=101418&color=9ccbfb)](https://github.com/AvengeMedia/danksearch/releases)
 [![AUR version (git)](https://img.shields.io/aur/version/dsearch-git?style=for-the-badge&labelColor=101418&color=9ccbfb&label=AUR%20(git))](https://aur.archlinux.org/packages/dsearch-git)
-[![Ko-Fi donate](https://img.shields.io/badge/donate-kofi?style=for-the-badge&logo=ko-fi&logoColor=ffffff&label=ko-fi&labelColor=101418&color=f16061&link=https%3A%2F%2Fko-fi.com%2Favengemediallc)](https://ko-fi.com/avengemediallc)
+[![GitHub License](https://img.shields.io/github/license/AvengeMedia/danksearch?style=for-the-badge&labelColor=101418&color=b9c8da)](https://github.com/AvengeMedia/danksearch/blob/master/LICENSE)
 
 </div>
 
-# dsearch
+---
 
 A configurable filesystem search service powered by [bleve](https://github.com/blevesearch/bleve) for Unix-based operating systems.
+
+**[Full documentation →](https://danklinux.com/docs/danksearch)**
+
+---
 
 ## Features
 

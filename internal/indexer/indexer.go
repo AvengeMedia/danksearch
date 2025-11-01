@@ -1078,24 +1078,6 @@ func (i *Indexer) SyncIncremental() error {
 	return nil
 }
 
-func (i *Indexer) ShouldReindex(intervalHours int) bool {
-	if intervalHours <= 0 {
-		return false
-	}
-
-	stats, err := i.loadStatsDocument()
-	if err != nil || stats == nil {
-		return true
-	}
-
-	if stats.LastIndexTime.IsZero() {
-		return true
-	}
-
-	interval := time.Duration(intervalHours) * time.Hour
-	return time.Since(stats.LastIndexTime) >= interval
-}
-
 func (i *Indexer) GetDocCount() (uint64, error) {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
