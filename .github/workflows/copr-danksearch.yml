@@ -1,8 +1,10 @@
 name: DankSearch Copr Release
 
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: ["Create Release"]
+    types: [completed]
+    branches: [master]
   workflow_dispatch:
     inputs:
       version:

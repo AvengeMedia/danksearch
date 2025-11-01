@@ -4,7 +4,7 @@
 %global pkg_summary Blazingly fast and efficient file system search tool
 
 Name:           danksearch
-Version:        0.0.5
+Version:        0.0.7
 Release:        1%{?dist}
 Summary:        %{pkg_summary}
 
@@ -44,9 +44,7 @@ case "%{_arch}" in
     ;;
 esac
 
-# Pinned to v0.0.5 temporarily - v0.0.6 missing AMD64 builds due to GitHub auth issue
-# TODO: Switch back to /latest/ once AMD64 builds are available in newer release
-wget -O %{_builddir}/dsearch.gz "https://github.com/AvengeMedia/danksearch/releases/download/v0.0.5/dsearch-linux-${DSEARCH_ARCH}.gz" || {
+wget -O %{_builddir}/dsearch.gz "https://github.com/AvengeMedia/danksearch/releases/latest/download/dsearch-linux-${DSEARCH_ARCH}.gz" || {
   echo "Failed to download dsearch for architecture %{_arch}"
   exit 1
 }
@@ -74,8 +72,8 @@ install -Dm644 %{_builddir}/dsearch.service %{buildroot}%{_userunitdir}/dsearch.
 %{_userunitdir}/dsearch.service
 
 %changelog
-* Fri Oct 31 2025 DankLinux Team <noreply@danklinux.com> - 0.0.5-1
-- Initial RPM package for DankSearch
-- Pre-built binary from GitHub releases (pinned to v0.0.5)
+* Fri Nov 1 2025 DankLinux Team <noreply@danklinux.com> - 0.0.7-1
+- Update to v0.0.7
+- Use /latest/ for automatic updates
+- Pre-built binary from GitHub releases
 - Includes systemd user service for autostart
-- Note: v0.0.6 skipped due to missing AMD64 builds
