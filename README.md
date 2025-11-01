@@ -42,7 +42,7 @@ make && sudo make install && make install-service
 Best to run as a systemd user unit:
 
 ```bash
-systemctl enable --now dsearch
+systemctl --user enable --now dsearch.service
 ```
 
 Then search with various options:
