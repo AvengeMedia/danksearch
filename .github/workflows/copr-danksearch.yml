@@ -1,0 +1,134 @@
+name: DankSearch Copr Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (e.g., 0.0.5, leave empty for latest release)'
+        required: false
+        default: ''
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+            echo "Using manual version: $VERSION"
+          elif [ "${{ github.event_name }}" = "release" ]; then
+            VERSION="${{ github.event.release.tag_name }}"
+            VERSION="${VERSION#v}"
+            echo "Using release version: $VERSION"
+          else
+            VERSION=$(curl -s https://api.github.com/repos/${{ github.repository }}/releases/latest | jq -r '.tag_name' | sed 's/^v//')
+            echo "Using latest release version: $VERSION"
+          fi
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "✅ Building DankSearch version: $VERSION"
+
+      - name: Setup build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm wget curl jq gzip
+          mkdir -p ~/rpmbuild/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
+          echo "✅ RPM build environment ready"
+
+      - name: Prepare spec file
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          CHANGELOG_DATE="$(date '+%a %b %d %Y')"
+
+          cp distro/fedora/danksearch.spec ~/rpmbuild/SPECS/
+
+          sed -i "s/^Version:.*/Version:        $VERSION/" ~/rpmbuild/SPECS/danksearch.spec
+
+          sed -i "s|releases/download/v[0-9.]*|releases/download/v$VERSION|g" ~/rpmbuild/SPECS/danksearch.spec
+          sed -i "s|danksearch/v[0-9.]*/assets|danksearch/v$VERSION/assets|g" ~/rpmbuild/SPECS/danksearch.spec
+          sed -i "s|danksearch/master/assets|danksearch/v$VERSION/assets|g" ~/rpmbuild/SPECS/danksearch.spec
+
+          sed -i "0,/^\\* .* DankLinux Team/{s|^\\* .* DankLinux Team|* $CHANGELOG_DATE DankLinux Team|}" ~/rpmbuild/SPECS/danksearch.spec
+          sed -i "0,/- .*/{s|- .*|- Release $VERSION|}" ~/rpmbuild/SPECS/danksearch.spec
+
+          echo "✅ Spec file prepared for v${VERSION}"
+          echo ""
+          echo "=== Spec file preview ==="
+          head -50 ~/rpmbuild/SPECS/danksearch.spec
+
+      - name: Build SRPM
+        id: build
+        run: |
+          cd ~/rpmbuild/SPECS
+
+          echo "🔨 Building SRPM..."
+          rpmbuild -bs danksearch.spec
+
+          SRPM=$(ls ~/rpmbuild/SRPMS/*.src.rpm | tail -n 1)
+          SRPM_NAME=$(basename "$SRPM")
+
+          echo "srpm_path=$SRPM" >> $GITHUB_OUTPUT
+          echo "srpm_name=$SRPM_NAME" >> $GITHUB_OUTPUT
+
+          echo "✅ SRPM built: $SRPM_NAME"
+          echo ""
+          echo "=== SRPM Info ==="
+          rpm -qpi "$SRPM"
+
+      - name: Upload SRPM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: danksearch-srpm-${{ steps.version.outputs.version }}
+          path: ${{ steps.build.outputs.srpm_path }}
+          retention-days: 90
+
+      - name: Install Copr CLI
+        run: |
+          sudo apt-get install -y python3-pip
+          pip3 install copr-cli
+
+          mkdir -p ~/.config
+          echo "${{ secrets.COPR_CONFIG }}" > ~/.config/copr
+          chmod 600 ~/.config/copr
+
+          echo "✅ Copr CLI configured"
+
+      - name: Upload to Copr
+        run: |
+          SRPM="${{ steps.build.outputs.srpm_path }}"
+          VERSION="${{ steps.version.outputs.version }}"
+
+          echo "🚀 Uploading SRPM to avengemedia/danklinux..."
+          echo "   SRPM: $(basename $SRPM)"
+          echo "   Version: $VERSION"
+
+          BUILD_OUTPUT=$(copr-cli build avengemedia/danklinux "$SRPM" --nowait 2>&1)
+          echo "$BUILD_OUTPUT"
+
+          BUILD_ID=$(echo "$BUILD_OUTPUT" | grep -oP 'Build was added to.*\K[0-9]+' || echo "unknown")
+
+          if [ "$BUILD_ID" != "unknown" ]; then
+            echo "✅ Build submitted successfully!"
+            echo "🔗 https://copr.fedorainfracloud.org/coprs/avengemedia/danklinux/build/$BUILD_ID/"
+          else
+            echo "⚠️  Could not extract build ID, but upload may have succeeded"
+          fi
+
+      - name: Build summary
+        if: always()
+        run: |
+          echo "### 🎉 DankSearch Copr Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **SRPM:** ${{ steps.build.outputs.srpm_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Project:** https://copr.fedorainfracloud.org/coprs/avengemedia/danklinux/" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Release has been built and uploaded to Copr!" >> $GITHUB_STEP_SUMMARY
