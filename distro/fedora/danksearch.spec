@@ -51,11 +51,26 @@ wget -O %{_builddir}/dsearch.gz "https://github.com/AvengeMedia/danksearch/relea
 gunzip -c %{_builddir}/dsearch.gz > %{_builddir}/dsearch
 chmod +x %{_builddir}/dsearch
 
-# Download systemd user service file from repository
-wget -O %{_builddir}/dsearch.service "https://raw.githubusercontent.com/AvengeMedia/danksearch/master/assets/dsearch.service" || {
-  echo "Failed to download systemd service file"
-  exit 1
-}
+# Create systemd user service file inline for RPM installation
+cat > %{_builddir}/dsearch.service << 'EOF'
+[Unit]
+Description=dsearch - Fast filesystem search service
+Documentation=https://github.com/AvengeMedia/dsearch
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/dsearch serve
+Restart=on-failure
+RestartSec=5s
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dsearch
+
+[Install]
+WantedBy=default.target
+EOF
 
 %build
 # Using pre-built binary - nothing to build
