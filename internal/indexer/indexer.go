@@ -3,6 +3,7 @@ package indexer
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"mime"
 	"os"
@@ -116,7 +117,24 @@ func openOrCreateIndex(path string) (bleve.Index, error) {
 		return idx, nil
 	}
 	if err != nil {
-		return nil, err
+		// Index exists but failed to open - likely corrupted
+		log.Warnf("failed to open existing index at %s: %v", path, err)
+		log.Warnf("index may be corrupted, attempting to recover by recreating...")
+
+		// Remove the corrupted index
+		if removeErr := os.RemoveAll(path); removeErr != nil {
+			return nil, fmt.Errorf("failed to remove corrupted index: %w", removeErr)
+		}
+		log.Infof("removed corrupted index at %s", path)
+
+		// Create a fresh index
+		mapping := buildIndexMapping()
+		idx, err = bleve.NewUsing(path, mapping, "scorch", "scorch", getIndexConfig())
+		if err != nil {
+			return nil, fmt.Errorf("failed to create new index after corruption: %w", err)
+		}
+		log.Infof("created new index at %s after corruption recovery", path)
+		return idx, nil
 	}
 	log.Infof("opened existing index at %s", path)
 	return idx, nil
