@@ -3,44 +3,37 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    gomod2nix = {
-      url = "github:nix-community/gomod2nix/v1.7.0";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
 
   outputs =
-    { self, nixpkgs, gomod2nix }:
+    { self, nixpkgs }:
     let
       supportedSystems = [
         "x86_64-linux"
         "aarch64-linux"
       ];
 
-      forAllSystems =
-        f:
-        builtins.listToAttrs (
-          map (system: {
-            name = system;
-            value = f system;
-          }) supportedSystems
-        );
+      forAllSystems = (f:
+        nixpkgs.lib.genAttrs supportedSystems (system:
+          f nixpkgs.legacyPackages.${system}
+        )
+      );
 
     in
     {
       packages = forAllSystems (
-        system:
+        pkgs:
         let
-          pkgs = import nixpkgs { inherit system; };
-          lib = pkgs.lib;
+          inherit (pkgs) lib system;
           dsearchVersion = "0.0.7";
         in
         {
-          dsearch = gomod2nix.legacyPackages.${system}.buildGoApplication {
+          dsearch = pkgs.buildGoModule {
             pname = "dsearch";
             version = dsearchVersion;
+            
             src = ./.;
-            modules = ./gomod2nix.toml;
+            vendorHash = "sha256-65NFlAtix5ehyaRok3/0Z6+j6U7ccc0Kdye0KFepLLM=";
 
             subPackages = [ "cmd/dsearch" ];
 
@@ -49,15 +42,6 @@
               "-w"
               "-X main.Version=${dsearchVersion}"
             ];
-
-            postPatch = ''
-              substituteInPlace assets/dsearch.service \
-                --replace-fail /usr/local/bin $out/bin
-            '';
-
-            postInstall = ''              
-              install -Dm 644 assets/dsearch.service -t $out/lib/systemd/user
-            '';
 
             meta = {
               description = "Indexed filesystem search in GO";
@@ -71,5 +55,10 @@
           default = self.packages.${system}.dsearch;
         }
       );
+
+      homeModules = {
+        default = self.homeModules.dsearch;
+        dsearch = import ./distro/nix self;
+      };
     };
 }
