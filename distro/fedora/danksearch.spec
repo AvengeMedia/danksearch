@@ -86,6 +86,28 @@ install -Dm644 %{_builddir}/dsearch.service %{buildroot}%{_userunitdir}/dsearch.
 %{_bindir}/dsearch
 %{_userunitdir}/dsearch.service
 
+%post
+# Initial install setup
+if [ "$1" -eq 1 ]; then
+cat << 'EOF'
+
+=========================================================================
+        Thanks for installing DankSearch!
+=========================================================================
+
+To configure, enable the systemd user unit service:
+
+    systemctl --user enable --now dsearch
+
+For more documentation visit:
+
+    https://danklinux.com/docs/danksearch
+
+=========================================================================
+
+EOF
+fi
+
 %changelog
 * Fri Nov 1 2025 DankLinux Team <noreply@danklinux.com> - 0.0.7-1
 - Update to v0.0.7
