@@ -51,8 +51,6 @@ jobs:
           sed -i "s/^Version:.*/Version:        $VERSION/" ~/rpmbuild/SPECS/danksearch.spec
 
           sed -i "s|releases/download/v[0-9.]*|releases/download/v$VERSION|g" ~/rpmbuild/SPECS/danksearch.spec
-          sed -i "s|danksearch/v[0-9.]*/assets|danksearch/v$VERSION/assets|g" ~/rpmbuild/SPECS/danksearch.spec
-          sed -i "s|danksearch/master/assets|danksearch/v$VERSION/assets|g" ~/rpmbuild/SPECS/danksearch.spec
 
           sed -i "0,/^\\* .* DankLinux Team/{s|^\\* .* DankLinux Team|* $CHANGELOG_DATE DankLinux Team|}" ~/rpmbuild/SPECS/danksearch.spec
           sed -i "0,/- .*/{s|- .*|- Release $VERSION|}" ~/rpmbuild/SPECS/danksearch.spec
