@@ -26,6 +26,7 @@ jobs:
           set -euo pipefail
 
           version="${GITHUB_REF#refs/tags/}"
+          version="${version#v}"
           echo "Updating flake.nix to version: $version"
 
           # Update version in flake.nix
