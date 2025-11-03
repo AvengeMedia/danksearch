@@ -42,6 +42,44 @@ Requires [Go](https://go.dev) 1.24+
 make && sudo make install && make install-service
 ```
 
+
+### NixOS
+
+The repository contains a flake that provides a Home Manager module. To use it, you simply need to add
+it as a flake input in your `flake.nix`:
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+
+    # ...
+
+    dsearch = {
+      url = "github:AvengeMedia/danksearch";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
+}
+```
+
+and import/enable it in your Home Manager configuration:
+
+```nix
+{ inputs, ... }:  {
+  imports = [ inputs.dsearch.homeModules.default ];
+
+  programs.dsearch = {
+    enable = true;
+
+    # Put your config here or omit this for dsearch to generate the default config at runtime
+    config = {
+      # ...
+    };
+  };
+}
+```
+
 ## Usage
 
 Best to run as a systemd user unit:
