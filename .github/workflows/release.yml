@@ -11,8 +11,42 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  update-flake-version:
+    name: Update Flake Version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Update flake.nix version
+        run: |
+          set -euo pipefail
+
+          version="${GITHUB_REF#refs/tags/}"
+          echo "Updating flake.nix to version: $version"
+
+          # Update version in flake.nix
+          sed -i "s/dsearchVersion = \"[^\"]*\"/dsearchVersion = \"$version\"/" flake.nix
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if ! git diff --quiet flake.nix; then
+            git add flake.nix
+            git commit -m "flake: bump version to $version"
+
+            # Push to master (or main, depending on your default branch)
+            git push origin HEAD:master || git push origin HEAD:main
+            echo "Pushed flake.nix version update to master"
+          else
+            echo "No version changes needed"
+          fi
+
   test:
-    name: 🧪 Test
+    name: Test
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -29,7 +63,7 @@ jobs:
         run: go vet ./...
 
   build:
-    name: 🔨 Build Binaries
+    name: Build Binaries
     needs: [test]
     strategy:
       matrix:
@@ -83,7 +117,7 @@ jobs:
             dsearch-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz.sha256
 
   create_release:
-    name: 📦 Create GitHub Release
+    name: Create GitHub Release
     runs-on: ubuntu-24.04
     needs: [build]
     steps:
