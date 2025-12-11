@@ -105,7 +105,7 @@ func (r *Router) handleSearch(conn net.Conn, req models.Request) {
 	if modAfter, ok := req.Params["modified_after"].(string); ok {
 		opts.ModifiedAfter = modAfter
 	}
-	if facets, ok := req.Params["facets"].([]interface{}); ok {
+	if facets, ok := req.Params["facets"].([]any); ok {
 		opts.Facets = make([]string, len(facets))
 		for i, f := range facets {
 			if s, ok := f.(string); ok {

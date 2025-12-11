@@ -140,8 +140,8 @@ func openOrCreateIndex(path string) (bleve.Index, error) {
 	return idx, nil
 }
 
-func getIndexConfig() map[string]interface{} {
-	return map[string]interface{}{
+func getIndexConfig() map[string]any {
+	return map[string]any{
 		"create_if_missing": true,
 		"error_if_exists":   false,
 		"unsafe_batch":      false,
@@ -149,8 +149,8 @@ func getIndexConfig() map[string]interface{} {
 	}
 }
 
-func getStoreConfig() map[string]interface{} {
-	return map[string]interface{}{
+func getStoreConfig() map[string]any {
+	return map[string]any{
 		"mmap":              false,
 		"metrics":           false,
 		"create_if_missing": true,
@@ -161,7 +161,7 @@ func getStoreConfig() map[string]interface{} {
 func buildIndexMapping() mapping.IndexMapping {
 	m := bleve.NewIndexMapping()
 
-	err := m.AddCustomAnalyzer("keyword_lc", map[string]interface{}{
+	err := m.AddCustomAnalyzer("keyword_lc", map[string]any{
 		"type":          "custom",
 		"tokenizer":     "single",
 		"token_filters": []string{"to_lower"},
@@ -170,7 +170,7 @@ func buildIndexMapping() mapping.IndexMapping {
 		panic(err)
 	}
 
-	err = m.AddCustomTokenFilter("ngram_2_15", map[string]interface{}{
+	err = m.AddCustomTokenFilter("ngram_2_15", map[string]any{
 		"type": "ngram",
 		"min":  float64(2),
 		"max":  float64(15),
@@ -179,7 +179,7 @@ func buildIndexMapping() mapping.IndexMapping {
 		panic(err)
 	}
 
-	err = m.AddCustomTokenFilter("edge_ngram_2_30", map[string]interface{}{
+	err = m.AddCustomTokenFilter("edge_ngram_2_30", map[string]any{
 		"type": "edge_ngram",
 		"min":  float64(2),
 		"max":  float64(30),
@@ -188,7 +188,7 @@ func buildIndexMapping() mapping.IndexMapping {
 		panic(err)
 	}
 
-	err = m.AddCustomAnalyzer("filename_ngram", map[string]interface{}{
+	err = m.AddCustomAnalyzer("filename_ngram", map[string]any{
 		"type":      "custom",
 		"tokenizer": "single",
 		"token_filters": []string{
@@ -200,7 +200,7 @@ func buildIndexMapping() mapping.IndexMapping {
 		panic(err)
 	}
 
-	err = m.AddCustomAnalyzer("filename_edge", map[string]interface{}{
+	err = m.AddCustomAnalyzer("filename_edge", map[string]any{
 		"type":      "custom",
 		"tokenizer": "single",
 		"token_filters": []string{

@@ -51,7 +51,7 @@ func findRunningSocket() (string, error) {
 	return "", fmt.Errorf("service not running")
 }
 
-func sendRequest(method string, params map[string]interface{}) (json.RawMessage, error) {
+func sendRequest(method string, params map[string]any) (json.RawMessage, error) {
 	socketPath, err := findRunningSocket()
 	if err != nil {
 		return nil, err
@@ -67,9 +67,8 @@ func sendRequest(method string, params map[string]interface{}) (json.RawMessage,
 	// Increase buffer size to handle large responses (default is 64KB max)
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 10*1024*1024) // 10MB max
-	if scanner.Scan() {
-		// Read and discard server info line
-	}
+	// Read and discard server info line
+	_ = scanner.Scan()
 
 	req := models.Request{
 		ID:     1,
@@ -144,7 +143,7 @@ func Search(query string, limit int) (*bleve.SearchResult, error) {
 }
 
 func SearchWithOptions(opts *SearchOptions) (*bleve.SearchResult, error) {
-	params := map[string]interface{}{
+	params := map[string]any{
 		"query": opts.Query,
 		"limit": opts.Limit,
 	}
@@ -271,13 +270,13 @@ func Sync() (string, error) {
 	return resp.Status, nil
 }
 
-func Stats() (map[string]interface{}, error) {
+func Stats() (map[string]any, error) {
 	result, err := sendRequest("stats", nil)
 	if err != nil {
 		return nil, err
 	}
 
-	var stats map[string]interface{}
+	var stats map[string]any
 	if err := json.Unmarshal(result, &stats); err != nil {
 		return nil, err
 	}

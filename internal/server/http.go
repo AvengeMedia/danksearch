@@ -15,7 +15,6 @@ import (
 
 type HTTPServer struct {
 	server *http.Server
-	api    huma.API
 }
 
 func NewHumaConfig(title, version string) huma.Config {
@@ -49,7 +48,7 @@ func NewHTTP(addr string, indexer api.IndexerInterface, watcher api.WatcherInter
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	})
 
 	r.Group(func(r chi.Router) {
@@ -65,7 +64,7 @@ func NewHTTP(addr string, indexer api.IndexerInterface, watcher api.WatcherInter
 
 		r.Get("/docs", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/html")
-			w.Write([]byte(`<!doctype html>
+			_, _ = w.Write([]byte(`<!doctype html>
 <html>
 	<head>
 		<title>DankSearch API Reference</title>

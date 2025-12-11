@@ -102,7 +102,7 @@ func TestRouter_Search(t *testing.T) {
 	req := models.Request{
 		ID:     2,
 		Method: "search",
-		Params: map[string]interface{}{
+		Params: map[string]any{
 			"query": "test",
 			"limit": float64(10),
 		},
@@ -307,7 +307,7 @@ func TestRouter_UnknownMethod(t *testing.T) {
 
 	router.RouteRequest(conn, req)
 
-	var resp models.Response[interface{}]
+	var resp models.Response[any]
 	if err := json.Unmarshal(conn.written, &resp); err != nil {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
