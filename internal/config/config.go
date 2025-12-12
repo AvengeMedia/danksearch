@@ -17,6 +17,7 @@ type IndexPath struct {
 	ExcludeHidden bool     `toml:"exclude_hidden"`
 	ExcludeDirs   []string `toml:"exclude_dirs"`
 	ExtractExif   bool     `toml:"extract_exif"`
+	Watch         *bool    `toml:"watch,omitempty"` // nil = true (default), false = skip fsnotify
 
 	excludeDirsMap map[string]bool
 }
@@ -379,6 +380,10 @@ func (c *Config) GetMaxDepth(path string) int {
 func (c *Config) IsTextFile(path string) bool {
 	ext := filepath.Ext(path)
 	return c.textExtsMap[ext]
+}
+
+func (ip *IndexPath) ShouldWatch() bool {
+	return ip.Watch == nil || *ip.Watch
 }
 
 type IndexStats struct {

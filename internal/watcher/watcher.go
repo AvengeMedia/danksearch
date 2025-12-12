@@ -61,6 +61,10 @@ func (w *Watcher) Start() error {
 	w.mu.Unlock()
 
 	for _, idxPath := range w.config.IndexPaths {
+		if !idxPath.ShouldWatch() {
+			log.Infof("skipping watch for %s (watch disabled)", idxPath.Path)
+			continue
+		}
 		if err := w.addWatches(idxPath.Path); err != nil {
 			return err
 		}
