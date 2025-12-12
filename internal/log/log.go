@@ -46,7 +46,11 @@ func GetLogger() *Logger {
 		base := cblog.New(os.Stderr)
 		base.SetStyles(styles)
 		base.SetReportTimestamp(false)
-		base.SetLevel(cblog.DebugLevel)
+		if level := os.Getenv("DANKSEARCH_DEBUG"); level != "" {
+			base.SetLevel(cblog.DebugLevel)
+		} else {
+			base.SetLevel(cblog.InfoLevel)
+		}
 
 		logger = &Logger{base}
 	})
