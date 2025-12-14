@@ -147,16 +147,24 @@ func (w *Watcher) addWatches(root string) error {
 }
 
 func (w *Watcher) eventLoop() {
+	w.mu.Lock()
+	watcher := w.watcher
+	w.mu.Unlock()
+
+	if watcher == nil {
+		return
+	}
+
 	for {
 		select {
 		case <-w.done:
 			return
-		case event, ok := <-w.watcher.Events:
+		case event, ok := <-watcher.Events:
 			if !ok {
 				return
 			}
 			w.handleEvent(event)
-		case err, ok := <-w.watcher.Errors:
+		case err, ok := <-watcher.Errors:
 			if !ok {
 				return
 			}

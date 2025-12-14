@@ -3,6 +3,7 @@ package watcher
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,16 +13,33 @@ import (
 type mockIndexer struct {
 	indexed []string
 	deleted []string
+	mu      sync.Mutex
 }
 
 func (m *mockIndexer) Index(path string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.indexed = append(m.indexed, path)
 	return nil
 }
 
 func (m *mockIndexer) Delete(path string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.deleted = append(m.deleted, path)
 	return nil
+}
+
+func (m *mockIndexer) indexedCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.indexed)
+}
+
+func (m *mockIndexer) deletedCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.deleted)
 }
 
 func TestNew(t *testing.T) {
@@ -121,7 +139,7 @@ func TestWatcher_FileEvents(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	if len(idx.indexed) == 0 {
+	if idx.indexedCount() == 0 {
 		t.Error("expected file to be indexed")
 	}
 
@@ -131,7 +149,7 @@ func TestWatcher_FileEvents(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	if len(idx.indexed) < 2 {
+	if idx.indexedCount() < 2 {
 		t.Error("expected file to be reindexed after modification")
 	}
 
@@ -141,7 +159,7 @@ func TestWatcher_FileEvents(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	if len(idx.deleted) == 0 {
+	if idx.deletedCount() == 0 {
 		t.Error("expected file to be deleted from index")
 	}
 }
@@ -182,7 +200,7 @@ func TestWatcher_ExcludedDirs(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	if len(idx.indexed) > 0 {
+	if idx.indexedCount() > 0 {
 		t.Error("files in excluded directories should not be indexed")
 	}
 }
