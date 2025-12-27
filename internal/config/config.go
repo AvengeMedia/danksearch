@@ -243,12 +243,19 @@ func GetDefaultConfigPath() string {
 }
 
 func (c *Config) findIndexPath(path string) *IndexPath {
+	var best *IndexPath
+	bestLen := 0
 	for i := range c.IndexPaths {
-		if strings.HasPrefix(path, c.IndexPaths[i].Path) {
-			return &c.IndexPaths[i]
+		if !strings.HasPrefix(path, c.IndexPaths[i].Path) {
+			continue
 		}
+		if len(c.IndexPaths[i].Path) <= bestLen {
+			continue
+		}
+		best = &c.IndexPaths[i]
+		bestLen = len(c.IndexPaths[i].Path)
 	}
-	return nil
+	return best
 }
 
 func (c *Config) ShouldIndexFile(path string) bool {

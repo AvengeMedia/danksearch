@@ -16,6 +16,7 @@ import (
 	"github.com/AvengeMedia/danksearch/internal/config"
 	"github.com/AvengeMedia/danksearch/internal/errdefs"
 	"github.com/AvengeMedia/danksearch/internal/log"
+	"github.com/AvengeMedia/danksearch/internal/metastore"
 	bleve "github.com/blevesearch/bleve/v2"
 	_ "github.com/blevesearch/bleve/v2/analysis/analyzer/custom"
 	_ "github.com/blevesearch/bleve/v2/analysis/token/edgengram"
@@ -51,6 +52,7 @@ type Document struct {
 type Indexer struct {
 	index         bleve.Index
 	config        *config.Config
+	meta          *metastore.Store
 	mu            sync.RWMutex
 	indexComplete atomic.Bool
 }
@@ -91,9 +93,16 @@ func New(cfg *config.Config) (*Indexer, error) {
 		return nil, errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, "failed to open index", err)
 	}
 
+	meta, err := metastore.New(cfg.IndexPath)
+	if err != nil {
+		idx.Close()
+		return nil, errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, "failed to open metastore", err)
+	}
+
 	i := &Indexer{
 		index:  idx,
 		config: cfg,
+		meta:   meta,
 	}
 
 	count, err := idx.DocCount()
@@ -318,13 +327,11 @@ func (i *Indexer) Index(path string) error {
 		return nil
 	}
 
-	// Read document without holding lock (file I/O can be slow)
 	doc, err := i.readDocument(path, info)
 	if err != nil {
 		return err
 	}
 
-	// Only lock when writing to index
 	i.mu.Lock()
 	err = i.index.Index(path, doc)
 	i.mu.Unlock()
@@ -333,7 +340,9 @@ func (i *Indexer) Index(path string) error {
 		return errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, path, err)
 	}
 
-	// Mark index as complete after first successful index
+	if err := i.meta.Put(path, metastore.FileMeta{ModTime: info.ModTime(), Size: info.Size()}); err != nil {
+		log.Debugf("failed to update metastore for %s: %v", path, err)
+	}
 	i.indexComplete.Store(true)
 
 	log.Debugf("indexed %s", path)
@@ -449,12 +458,16 @@ func (i *Indexer) extractExifData(path string, doc *Document) {
 
 func (i *Indexer) Delete(path string) error {
 	i.mu.Lock()
-	defer i.mu.Unlock()
+	err := i.index.Delete(path)
+	i.mu.Unlock()
 
-	if err := i.index.Delete(path); err != nil {
+	if err != nil {
 		return errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, "delete failed", err)
 	}
 
+	if err := i.meta.Delete(path); err != nil {
+		log.Debugf("failed to delete %s from metastore: %v", path, err)
+	}
 	log.Debugf("deleted %s from index", path)
 	return nil
 }
@@ -803,6 +816,10 @@ func (i *Indexer) ReindexAll() error {
 	i.indexComplete.Store(false)
 	i.mu.Unlock()
 
+	if err := i.meta.Clear(); err != nil {
+		return errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, "failed to clear metastore", err)
+	}
+
 	var totalFiles int64
 	var totalBytes int64
 	var mu sync.Mutex
@@ -966,42 +983,19 @@ func (i *Indexer) SyncIncremental() error {
 
 	var added, updated, deleted, unchanged int64
 	var totalBytes int64
-	var pathsMu sync.Mutex // Protects indexedPaths map
-	var statsMu sync.Mutex // Protects totalBytes
+	var pathsMu sync.Mutex
+	var statsMu sync.Mutex
 	semaphore := make(chan struct{}, i.config.WorkerCount)
 	var wg sync.WaitGroup
 
-	// Get all indexed paths
-	indexedPaths := make(map[string]*Document)
-	count, err := i.index.DocCount()
-	if err != nil {
-		return err
+	indexedPaths := make(map[string]metastore.FileMeta)
+	if err := i.meta.ForEach(func(path string, meta metastore.FileMeta) error {
+		indexedPaths[path] = meta
+		return nil
+	}); err != nil {
+		return errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, "failed to read metastore", err)
 	}
 
-	req := bleve.NewSearchRequest(bleve.NewMatchAllQuery())
-	req.Size = int(count)
-	req.Fields = []string{"path", "mtime", "size", "hash"}
-
-	result, err := i.index.Search(req)
-	if err != nil {
-		return err
-	}
-
-	for _, hit := range result.Hits {
-		doc := &Document{Path: hit.ID}
-		if mtimeStr, ok := hit.Fields["mtime"].(string); ok {
-			doc.ModTime, _ = time.Parse(time.RFC3339, mtimeStr)
-		}
-		if size, ok := hit.Fields["size"].(float64); ok {
-			doc.Size = int64(size)
-		}
-		if hash, ok := hit.Fields["hash"].(string); ok {
-			doc.Hash = hash
-		}
-		indexedPaths[hit.ID] = doc
-	}
-
-	// Scan filesystem and compare
 	for _, idxPath := range i.config.IndexPaths {
 		err := filepath.Walk(idxPath.Path, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
@@ -1033,34 +1027,28 @@ func (i *Indexer) SyncIncremental() error {
 				semaphore <- struct{}{}
 				defer func() { <-semaphore }()
 
-				// Check existing doc with lock
 				pathsMu.Lock()
-				existingDoc, exists := indexedPaths[p]
-				delete(indexedPaths, p) // Mark as seen
+				existing, exists := indexedPaths[p]
+				delete(indexedPaths, p)
 				pathsMu.Unlock()
 
-				// Check if we need to update
-				needsUpdate := false
-				if !exists {
-					needsUpdate = true
+				switch {
+				case !exists:
 					atomic.AddInt64(&added, 1)
-				} else if !existingDoc.ModTime.Equal(inf.ModTime()) {
-					needsUpdate = true
+				case !existing.ModTime.Equal(inf.ModTime()):
 					atomic.AddInt64(&updated, 1)
-				} else {
+				default:
 					atomic.AddInt64(&unchanged, 1)
 					return
 				}
 
-				if needsUpdate {
-					if err := i.Index(p); err != nil {
-						log.Debugf("failed to index %s: %v", p, err)
-						return
-					}
-					statsMu.Lock()
-					totalBytes += inf.Size()
-					statsMu.Unlock()
+				if err := i.Index(p); err != nil {
+					log.Debugf("failed to index %s: %v", p, err)
+					return
 				}
+				statsMu.Lock()
+				totalBytes += inf.Size()
+				statsMu.Unlock()
 			}(path, info)
 
 			return nil
@@ -1073,19 +1061,18 @@ func (i *Indexer) SyncIncremental() error {
 
 	wg.Wait()
 
-	// Delete files that no longer exist
 	for path := range indexedPaths {
 		if err := i.Delete(path); err != nil {
 			log.Debugf("failed to delete %s: %v", path, err)
-		} else {
-			atomic.AddInt64(&deleted, 1)
+			continue
 		}
+		atomic.AddInt64(&deleted, 1)
 	}
 
 	duration := time.Since(start)
 	i.indexComplete.Store(true)
 
-	count, _ = i.index.DocCount()
+	count, _ := i.index.DocCount()
 	if err := i.saveStatsDocument(int(count), totalBytes, duration); err != nil {
 		log.Warnf("failed to save stats: %v", err)
 	}
@@ -1105,5 +1092,6 @@ func (i *Indexer) GetDocCount() (uint64, error) {
 func (i *Indexer) Close() error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	i.meta.Close()
 	return i.index.Close()
 }
