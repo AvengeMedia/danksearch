@@ -1,4 +1,5 @@
-self: {
+self:
+{
   config,
   lib,
   pkgs,
@@ -6,13 +7,14 @@ self: {
 }:
 with lib;
 let
-  tomlFormat = pkgs.formats.toml {};
+  tomlFormat = pkgs.formats.toml { };
 
   cfg = config.programs.dsearch;
-in {
+in
+{
   options.programs.dsearch = {
     enable = mkEnableOption "danksearch";
-    package = mkPackageOption self.packages.${pkgs.system} "dsearch" { };
+    package = mkPackageOption self.packages.${pkgs.stdenv.hostPlatform.system} "dsearch" { };
 
     config = mkOption {
       type = types.nullOr tomlFormat.type;
