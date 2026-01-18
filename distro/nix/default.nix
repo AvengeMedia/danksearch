@@ -12,7 +12,7 @@ let
 in {
   options.programs.dsearch = {
     enable = mkEnableOption "danksearch";
-    package = mkPackageOption self.packages.${pkgs.system} "dsearch" { };
+    package = mkPackageOption self.packages.${pkgs.stdenv.hostPlatform.system} "dsearch" { };
 
     config = mkOption {
       type = types.nullOr tomlFormat.type;
