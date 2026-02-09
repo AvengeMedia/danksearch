@@ -162,6 +162,121 @@ func TestConfig_IsTextFile(t *testing.T) {
 	}
 }
 
+func TestConfig_RegexExcludeDirs(t *testing.T) {
+	cfg := &Config{
+		IndexAllFiles: true,
+		IndexPaths: []IndexPath{
+			{
+				Path:        "/home/user",
+				MaxDepth:    10,
+				ExcludeDirs: []string{"node_modules", "/^build-/", `/^out-\d+$/`},
+			},
+		},
+	}
+	cfg.BuildMaps()
+
+	tests := []struct {
+		name     string
+		path     string
+		expected bool
+	}{
+		{
+			name:     "exact match still works",
+			path:     "/home/user/project/node_modules/pkg/index.js",
+			expected: false,
+		},
+		{
+			name:     "regex excludes build-release",
+			path:     "/home/user/project/build-release/app.js",
+			expected: false,
+		},
+		{
+			name:     "regex excludes build-debug",
+			path:     "/home/user/project/build-debug/app.js",
+			expected: false,
+		},
+		{
+			name:     "regex does not exclude mybuild",
+			path:     "/home/user/project/mybuild/app.js",
+			expected: true,
+		},
+		{
+			name:     "regex excludes out-123",
+			path:     "/home/user/project/out-123/app.js",
+			expected: false,
+		},
+		{
+			name:     "regex does not exclude output",
+			path:     "/home/user/project/output/app.js",
+			expected: true,
+		},
+		{
+			name:     "non-excluded dir is indexed",
+			path:     "/home/user/project/src/main.go",
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := cfg.ShouldIndexFile(tt.path)
+			if got != tt.expected {
+				t.Errorf("ShouldIndexFile(%v) = %v, want %v", tt.path, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestConfig_InvalidRegexSkipped(t *testing.T) {
+	cfg := &Config{
+		IndexAllFiles: true,
+		IndexPaths: []IndexPath{
+			{
+				Path:        "/home/user",
+				MaxDepth:    10,
+				ExcludeDirs: []string{"/[unclosed/", "/^valid-/"},
+			},
+		},
+	}
+	cfg.BuildMaps()
+
+	// Invalid regex is skipped, valid one still works
+	if cfg.ShouldIndexFile("/home/user/project/valid-dir/file.go") {
+		t.Error("valid regex /^valid-/ should exclude valid-dir")
+	}
+
+	// The invalid regex should not cause a panic or exclude everything
+	if !cfg.ShouldIndexFile("/home/user/project/src/file.go") {
+		t.Error("src should not be excluded")
+	}
+}
+
+func TestConfig_BackwardsCompat(t *testing.T) {
+	// Config with no regex entries should work exactly as before
+	cfg := &Config{
+		IndexAllFiles: true,
+		IndexPaths: []IndexPath{
+			{
+				Path:          "/home/user",
+				MaxDepth:      10,
+				ExcludeHidden: true,
+				ExcludeDirs:   []string{"node_modules", "dist", "build"},
+			},
+		},
+	}
+	cfg.BuildMaps()
+
+	if cfg.ShouldIndexFile("/home/user/project/node_modules/pkg.json") {
+		t.Error("node_modules should be excluded")
+	}
+	if cfg.ShouldIndexFile("/home/user/project/dist/bundle.js") {
+		t.Error("dist should be excluded")
+	}
+	if !cfg.ShouldIndexFile("/home/user/project/src/main.go") {
+		t.Error("src should not be excluded")
+	}
+}
+
 func TestGetDefaultIndexPath(t *testing.T) {
 	path := getDefaultIndexPath()
 

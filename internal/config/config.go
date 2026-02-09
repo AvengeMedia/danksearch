@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -19,7 +20,8 @@ type IndexPath struct {
 	ExtractExif   bool     `toml:"extract_exif"`
 	Watch         *bool    `toml:"watch,omitempty"` // nil = true (default), false = skip fsnotify
 
-	excludeDirsMap map[string]bool
+	excludeDirsMap   map[string]bool
+	excludeDirsRegex []*regexp.Regexp
 }
 
 type Config struct {
@@ -197,8 +199,19 @@ func (c *Config) Save(path string) error {
 func (c *Config) BuildMaps() {
 	for i := range c.IndexPaths {
 		c.IndexPaths[i].excludeDirsMap = make(map[string]bool, len(c.IndexPaths[i].ExcludeDirs))
+		c.IndexPaths[i].excludeDirsRegex = nil
 		for _, dir := range c.IndexPaths[i].ExcludeDirs {
-			c.IndexPaths[i].excludeDirsMap[dir] = true
+			if len(dir) >= 3 && dir[0] == '/' && dir[len(dir)-1] == '/' {
+				pattern := dir[1 : len(dir)-1]
+				re, err := regexp.Compile(pattern)
+				if err != nil {
+					log.Warnf("invalid regex in exclude_dirs %q: %v", dir, err)
+					continue
+				}
+				c.IndexPaths[i].excludeDirsRegex = append(c.IndexPaths[i].excludeDirsRegex, re)
+			} else {
+				c.IndexPaths[i].excludeDirsMap[dir] = true
+			}
 		}
 	}
 
@@ -268,7 +281,7 @@ func (c *Config) ShouldIndexFile(path string) bool {
 		return false
 	}
 
-	if containsExcludedComponent(path, idxPath.Path, idxPath.excludeDirsMap) {
+	if containsExcludedComponent(path, idxPath.Path, idxPath.excludeDirsMap, idxPath.excludeDirsRegex) {
 		return false
 	}
 
@@ -285,7 +298,7 @@ func (c *Config) ShouldIndexDir(path string) bool {
 		return false
 	}
 
-	return !containsExcludedComponent(path, idxPath.Path, idxPath.excludeDirsMap)
+	return !containsExcludedComponent(path, idxPath.Path, idxPath.excludeDirsMap, idxPath.excludeDirsRegex)
 }
 
 func containsHiddenComponent(path, rootDir string) bool {
@@ -322,7 +335,7 @@ func containsHiddenComponent(path, rootDir string) bool {
 	return false
 }
 
-func containsExcludedComponent(path, rootDir string, excludeMap map[string]bool) bool {
+func containsExcludedComponent(path, rootDir string, excludeMap map[string]bool, regexes []*regexp.Regexp) bool {
 	rel, err := filepath.Rel(rootDir, path)
 	if err != nil {
 		return false
@@ -344,6 +357,11 @@ func containsExcludedComponent(path, rootDir string, excludeMap map[string]bool)
 	for _, comp := range components {
 		if excludeMap[comp] {
 			return true
+		}
+		for _, re := range regexes {
+			if re.MatchString(comp) {
+				return true
+			}
 		}
 	}
 
