@@ -25,17 +25,25 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Try to build and capture the expected hash from error message
-          echo "Attempting nix build to get new vendorHash..."
-          if output=$(nix build .#dsearch --show-trace 2>&1); then
-            echo "Build succeeded, no hash update needed"
+          # Save current hash
+          current_hash=$(grep -oP 'vendorHash = "\K[^"]+' flake.nix)
+          echo "Current vendorHash: $current_hash"
+
+          # Force a hash mismatch by setting a fake hash so nix always
+          # reports the correct hash via "specified/got" error output.
+          # This avoids issues where a stale cached go-modules derivation
+          # causes a Go vendor inconsistency error instead of a hash mismatch.
+          fake_hash="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+          sed -i "s|vendorHash = \"$current_hash\"|vendorHash = \"$fake_hash\"|" flake.nix
+
+          echo "Attempting nix build to compute new vendorHash..."
+          if output=$(nix build .#dsearch 2>&1); then
+            echo "Build succeeded with fake hash (unexpected), restoring original"
+            sed -i "s|vendorHash = \"$fake_hash\"|vendorHash = \"$current_hash\"|" flake.nix
             exit 0
           fi
 
-          echo "Build failed. Output:"
-          echo "$output"
-
-          # Extract the expected hash from the error message
+          # Extract the correct hash from the error message
           new_hash=$(echo "$output" | grep -oP "got:\s+\K\S+" | head -n1)
 
           if [ -z "$new_hash" ]; then
@@ -47,21 +55,18 @@ jobs:
 
           echo "New vendorHash: $new_hash"
 
-          # Get current hash from flake.nix
-          current_hash=$(grep -oP 'vendorHash = "\K[^"]+' flake.nix)
-          echo "Current vendorHash: $current_hash"
-
           if [ "$current_hash" = "$new_hash" ]; then
-            echo "vendorHash is already up to date"
+            echo "vendorHash is already up to date, restoring"
+            sed -i "s|vendorHash = \"$fake_hash\"|vendorHash = \"$current_hash\"|" flake.nix
             exit 0
           fi
 
-          # Update the hash in flake.nix
-          sed -i "s|vendorHash = \"$current_hash\"|vendorHash = \"$new_hash\"|" flake.nix
+          # Update flake.nix with the correct hash
+          sed -i "s|vendorHash = \"$fake_hash\"|vendorHash = \"$new_hash\"|" flake.nix
 
           # Verify the build works with the new hash
           echo "Verifying build with new vendorHash..."
-          nix build .#dsearch --show-trace
+          nix build .#dsearch
 
           echo "vendorHash updated successfully!"
 

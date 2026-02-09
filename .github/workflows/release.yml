@@ -167,11 +167,32 @@ jobs:
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
 
+      # Generate source tarball with vendored modules
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ./go.mod
+
+      - name: Generate vendored source tarball
+        run: |
+          VERSION=${{ github.ref_name }}
+          VERSION_NUM=${VERSION#v}
+          go mod vendor
+          tar czf "dsearch-${VERSION_NUM}.tar.gz" --transform "s,^,dsearch-${VERSION_NUM}/," --exclude=./artifacts --exclude=.git *
+
       - name: Upload assets
         run: |
           VERSION=${{ github.ref_name }}
+          VERSION_NUM=${VERSION#v}
+
+          # Upload all binaries and checksums
           find ./artifacts -name "dsearch-*" -type f | while read file; do
+            echo "Uploading: $file"
             gh release upload "$VERSION" "$file" --clobber
           done
+
+          # Upload vendored source tarball
+          echo "Uploading: dsearch-${VERSION_NUM}.tar.gz"
+          gh release upload "$VERSION" "dsearch-${VERSION_NUM}.tar.gz" --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
