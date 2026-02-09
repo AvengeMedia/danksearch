@@ -7,6 +7,7 @@ on:
       - "go.sum"
     branches:
       - master
+  workflow_dispatch:
 
 jobs:
   update-vendor-hash:
@@ -26,10 +27,13 @@ jobs:
 
           # Try to build and capture the expected hash from error message
           echo "Attempting nix build to get new vendorHash..."
-          if output=$(nix build .#dsearch 2>&1); then
+          if output=$(nix build .#dsearch --show-trace 2>&1); then
             echo "Build succeeded, no hash update needed"
             exit 0
           fi
+
+          echo "Build failed. Output:"
+          echo "$output"
 
           # Extract the expected hash from the error message
           new_hash=$(echo "$output" | grep -oP "got:\s+\K\S+" | head -n1)
@@ -57,7 +61,7 @@ jobs:
 
           # Verify the build works with the new hash
           echo "Verifying build with new vendorHash..."
-          nix build .#dsearch
+          nix build .#dsearch --show-trace
 
           echo "vendorHash updated successfully!"
 
