@@ -829,7 +829,7 @@ func (i *Indexer) ReindexAll() error {
 	for _, idxPath := range i.config.IndexPaths {
 		log.Infof("indexing %s (max_depth: %d)", idxPath.Path, idxPath.MaxDepth)
 
-		err := filepath.Walk(idxPath.Path, func(path string, info os.FileInfo, err error) error {
+		err := walkFollowSymlinks(idxPath.Path, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				if os.IsPermission(err) {
 					log.Debugf("permission denied: %s", path)
@@ -997,7 +997,7 @@ func (i *Indexer) SyncIncremental() error {
 	}
 
 	for _, idxPath := range i.config.IndexPaths {
-		err := filepath.Walk(idxPath.Path, func(path string, info os.FileInfo, err error) error {
+		err := walkFollowSymlinks(idxPath.Path, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				if os.IsPermission(err) {
 					return nil
@@ -1094,4 +1094,59 @@ func (i *Indexer) Close() error {
 	defer i.mu.Unlock()
 	i.meta.Close()
 	return i.index.Close()
+}
+
+func walkFollowSymlinks(root string, fn filepath.WalkFunc) error {
+	info, err := os.Stat(root)
+	if err != nil {
+		return fn(root, nil, err)
+	}
+	return symWalk(root, info, fn, make(map[string]bool))
+}
+
+func symWalk(path string, info os.FileInfo, fn filepath.WalkFunc, visited map[string]bool) error {
+	if !info.IsDir() {
+		return fn(path, info, nil)
+	}
+
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return fn(path, info, err)
+	}
+
+	if visited[resolved] {
+		return nil
+	}
+	visited[resolved] = true
+
+	if err := fn(path, info, nil); err != nil {
+		if err == filepath.SkipDir {
+			return nil
+		}
+		return err
+	}
+
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return fn(path, info, err)
+	}
+
+	for _, e := range entries {
+		child := filepath.Join(path, e.Name())
+		childInfo, err := os.Stat(child)
+		if err != nil {
+			if fnErr := fn(child, nil, err); fnErr != nil && fnErr != filepath.SkipDir {
+				return fnErr
+			}
+			continue
+		}
+		if err := symWalk(child, childInfo, fn, visited); err != nil {
+			if childInfo.IsDir() && err == filepath.SkipDir {
+				continue
+			}
+			return err
+		}
+	}
+
+	return nil
 }
