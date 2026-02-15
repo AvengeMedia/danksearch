@@ -284,6 +284,38 @@ func Stats() (map[string]any, error) {
 	return stats, nil
 }
 
+type FileEntry struct {
+	Path    string `json:"path"`
+	ModTime string `json:"mod_time"`
+	Size    int64  `json:"size"`
+}
+
+type FilesResult struct {
+	Files []FileEntry `json:"files"`
+	Total int         `json:"total"`
+}
+
+func Files(prefix string, limit int) (*FilesResult, error) {
+	params := map[string]any{
+		"limit": limit,
+	}
+	if prefix != "" {
+		params["prefix"] = prefix
+	}
+
+	result, err := sendRequest("index.files", params)
+	if err != nil {
+		return nil, err
+	}
+
+	var filesResult FilesResult
+	if err := json.Unmarshal(result, &filesResult); err != nil {
+		return nil, err
+	}
+
+	return &filesResult, nil
+}
+
 func WatchStatus() (string, error) {
 	result, err := sendRequest("watch.status", nil)
 	if err != nil {

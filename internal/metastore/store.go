@@ -1,6 +1,7 @@
 package metastore
 
 import (
+	"bytes"
 	"encoding/binary"
 	"path/filepath"
 	"time"
@@ -75,6 +76,19 @@ func (s *Store) ForEach(fn func(path string, meta FileMeta) error) error {
 		return b.ForEach(func(k, v []byte) error {
 			return fn(string(k), decodeMeta(v))
 		})
+	})
+}
+
+func (s *Store) ForEachPrefix(prefix string, fn func(path string, meta FileMeta) error) error {
+	pfx := []byte(prefix)
+	return s.db.View(func(tx *bolt.Tx) error {
+		c := tx.Bucket(bucketName).Cursor()
+		for k, v := c.Seek(pfx); k != nil && bytes.HasPrefix(k, pfx); k, v = c.Next() {
+			if err := fn(string(k), decodeMeta(v)); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 

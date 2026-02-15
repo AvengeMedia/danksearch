@@ -7,11 +7,16 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
+
+	"path/filepath"
+	"strings"
 
 	"github.com/AvengeMedia/danksearch/internal/client"
 	"github.com/AvengeMedia/danksearch/internal/config"
 	"github.com/AvengeMedia/danksearch/internal/indexer"
 	"github.com/AvengeMedia/danksearch/internal/log"
+	"github.com/AvengeMedia/danksearch/internal/metastore"
 	"github.com/AvengeMedia/danksearch/internal/server"
 	"github.com/AvengeMedia/danksearch/internal/watcher"
 	"github.com/spf13/cobra"
@@ -34,15 +39,17 @@ var (
 	httpOnly      bool
 	socketOnly    bool
 
-	searchLimit           int
-	searchField           string
-	searchExt             string
-	searchFuzzy           bool
-	searchSort            string
-	searchSortDesc        bool
-	searchMinSize         int64
-	searchMaxSize         int64
-	searchJSON            bool
+	searchLimit    int
+	searchField    string
+	searchExt      string
+	searchFuzzy    bool
+	searchSort     string
+	searchSortDesc bool
+	searchMinSize  int64
+	searchMaxSize  int64
+	searchJSON     bool
+
+	filesLimit            int
 	searchFolder          string
 	searchExifMake        string
 	searchExifModel       string
@@ -100,6 +107,26 @@ var indexStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show index statistics",
 	RunE:  runIndexStatus,
+}
+
+var indexDirsCmd = &cobra.Command{
+	Use:   "dirs",
+	Short: "List configured index paths",
+	RunE:  runIndexDirs,
+}
+
+var indexCheckCmd = &cobra.Command{
+	Use:   "check <path>",
+	Short: "Check whether a path is indexed",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runIndexCheck,
+}
+
+var indexFilesCmd = &cobra.Command{
+	Use:   "files [prefix]",
+	Short: "List files in the metastore",
+	Args:  cobra.MaximumNArgs(1),
+	RunE:  runIndexFiles,
 }
 
 var watchCmd = &cobra.Command{
@@ -174,9 +201,14 @@ func init() {
 	searchCmd.Flags().Float64Var(&searchExifLonMin, "exif-lon-min", 0, "minimum GPS longitude")
 	searchCmd.Flags().Float64Var(&searchExifLonMax, "exif-lon-max", 0, "maximum GPS longitude")
 
+	indexFilesCmd.Flags().IntVar(&filesLimit, "limit", 100, "maximum number of files to list")
+
 	indexCmd.AddCommand(indexGenerateCmd)
 	indexCmd.AddCommand(indexSyncCmd)
 	indexCmd.AddCommand(indexStatusCmd)
+	indexCmd.AddCommand(indexDirsCmd)
+	indexCmd.AddCommand(indexCheckCmd)
+	indexCmd.AddCommand(indexFilesCmd)
 
 	watchCmd.AddCommand(watchStatusCmd)
 	watchCmd.AddCommand(watchStartCmd)
@@ -505,6 +537,144 @@ func runIndexStatus(cmd *cobra.Command, args []string) error {
 	log.Infof("  Duration: %s", indexStats.IndexDuration)
 
 	return nil
+}
+
+func runIndexDirs(cmd *cobra.Command, args []string) error {
+	cfg := buildConfig()
+	for _, ip := range cfg.IndexPaths {
+		depth := "unlimited"
+		if ip.MaxDepth > 0 {
+			depth = fmt.Sprintf("%d", ip.MaxDepth)
+		}
+		hidden := "included"
+		if ip.ExcludeHidden {
+			hidden = "excluded"
+		}
+		watch := "on"
+		if !ip.ShouldWatch() {
+			watch = "off"
+		}
+		exif := "off"
+		if ip.ExtractExif {
+			exif = "on"
+		}
+		fmt.Printf("%s (depth: %s, hidden: %s, watch: %s, exif: %s)\n",
+			ip.Path, depth, hidden, watch, exif)
+		if len(ip.ExcludeDirs) > 0 {
+			fmt.Printf("  exclude: %s\n", strings.Join(ip.ExcludeDirs, ", "))
+		}
+	}
+	return nil
+}
+
+func runIndexCheck(cmd *cobra.Command, args []string) error {
+	path, err := filepath.Abs(args[0])
+	if err != nil {
+		return err
+	}
+
+	cfg := buildConfig()
+	idxPath := cfg.FindIndexPath(path)
+
+	fmt.Printf("%s\n", path)
+
+	if idxPath == nil {
+		fmt.Printf("  index path: none\n")
+		fmt.Printf("  config:     excluded (not under any configured index path)\n")
+		return nil
+	}
+	fmt.Printf("  index path: %s\n", idxPath.Path)
+
+	reason := cfg.ExclusionReason(path)
+	if reason != "" {
+		fmt.Printf("  config:     excluded (%s)\n", reason)
+		return nil
+	}
+	fmt.Printf("  config:     included\n")
+
+	info, statErr := os.Stat(path)
+	if statErr == nil && info.IsDir() {
+		depth := cfg.GetDepth(path)
+		maxDepth := cfg.GetMaxDepth(path)
+		if maxDepth > 0 {
+			fmt.Printf("  depth:      %d (max: %d)\n", depth, maxDepth)
+		} else {
+			fmt.Printf("  depth:      %d (unlimited)\n", depth)
+		}
+		return nil
+	}
+
+	store, err := metastore.New(cfg.IndexPath)
+	if err != nil {
+		fmt.Printf("  indexed:    unknown (cannot open metastore: %v)\n", err)
+		return nil
+	}
+	defer store.Close()
+
+	meta, found, err := store.Get(path)
+	if err != nil {
+		fmt.Printf("  indexed:    unknown (metastore error: %v)\n", err)
+		return nil
+	}
+	if found {
+		fmt.Printf("  indexed:    yes (%s, %s)\n",
+			meta.ModTime.Format("2006-01-02 15:04:05"), formatSize(meta.Size))
+	} else {
+		fmt.Printf("  indexed:    no\n")
+	}
+	return nil
+}
+
+func runIndexFiles(cmd *cobra.Command, args []string) error {
+	prefix := ""
+	if len(args) > 0 {
+		prefix = args[0]
+	}
+
+	result, err := client.Files(prefix, filesLimit)
+	if err == nil {
+		for _, f := range result.Files {
+			t, _ := time.Parse(time.RFC3339, f.ModTime)
+			fmt.Printf("%s (%s, %s)\n", f.Path, t.Format("2006-01-02"), formatSize(f.Size))
+		}
+		if result.Total > filesLimit {
+			fmt.Printf("(showing %d of %d files)\n", len(result.Files), result.Total)
+		}
+		return nil
+	}
+
+	cfg := buildConfig()
+	idx, err := indexer.New(cfg)
+	if err != nil {
+		return fmt.Errorf("server not running and cannot open index: %v", err)
+	}
+	defer idx.Close()
+
+	files, total, err := idx.ListFiles(prefix, filesLimit)
+	if err != nil {
+		return err
+	}
+
+	for _, f := range files {
+		fmt.Printf("%s (%s, %s)\n", f.Path, f.ModTime.Format("2006-01-02"), formatSize(f.Size))
+	}
+	if total > filesLimit {
+		fmt.Printf("(showing %d of %d files)\n", len(files), total)
+	}
+	return nil
+}
+
+func formatSize(bytes int64) string {
+	switch {
+	case bytes >= 1<<30:
+		return fmt.Sprintf("%.1f GB", float64(bytes)/float64(1<<30))
+	case bytes >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(bytes)/float64(1<<20))
+	case bytes >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(bytes)/float64(1<<10))
+	default:
+		return fmt.Sprintf("%d B", bytes)
+	}
 }
 
 func runWatchStatus(cmd *cobra.Command, args []string) error {

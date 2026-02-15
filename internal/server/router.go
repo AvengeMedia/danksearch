@@ -17,6 +17,7 @@ type IndexerInterface interface {
 	ReindexAll() error
 	SyncIncremental() error
 	Stats() *config.IndexStats
+	ListFiles(prefix string, limit int) ([]indexer.FileEntry, int, error)
 }
 
 type WatcherInterface interface {
@@ -51,6 +52,8 @@ func (r *Router) RouteRequest(conn net.Conn, req models.Request) {
 		r.handleSync(conn, req)
 	case "stats":
 		r.handleStats(conn, req)
+	case "index.files":
+		r.handleIndexFiles(conn, req)
 	case "watch.start":
 		r.handleWatchStart(conn, req)
 	case "watch.stop":
@@ -183,4 +186,23 @@ func (r *Router) handleWatchStatus(conn net.Conn, req models.Request) {
 	}
 
 	models.Respond(conn, req.ID, map[string]string{"status": status})
+}
+
+func (r *Router) handleIndexFiles(conn net.Conn, req models.Request) {
+	prefix, _ := req.Params["prefix"].(string)
+	limit := 100
+	if l, ok := req.Params["limit"].(float64); ok && l > 0 {
+		limit = int(l)
+	}
+
+	files, total, err := r.indexer.ListFiles(prefix, limit)
+	if err != nil {
+		models.RespondError(conn, req.ID, fmt.Sprintf("list files failed: %v", err))
+		return
+	}
+
+	models.Respond(conn, req.ID, map[string]any{
+		"files": files,
+		"total": total,
+	})
 }

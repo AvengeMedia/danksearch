@@ -271,6 +271,24 @@ func (c *Config) findIndexPath(path string) *IndexPath {
 	return best
 }
 
+func (c *Config) FindIndexPath(path string) *IndexPath {
+	return c.findIndexPath(path)
+}
+
+func (c *Config) ExclusionReason(path string) string {
+	idxPath := c.findIndexPath(path)
+	if idxPath == nil {
+		return "not under any configured index path"
+	}
+	if idxPath.ExcludeHidden && containsHiddenComponent(path, idxPath.Path) {
+		return "hidden"
+	}
+	if comp := excludedComponent(path, idxPath.Path, idxPath.excludeDirsMap, idxPath.excludeDirsRegex); comp != "" {
+		return "exclude_dirs: " + comp
+	}
+	return ""
+}
+
 func (c *Config) ShouldIndexFile(path string) bool {
 	idxPath := c.findIndexPath(path)
 	if idxPath == nil {
@@ -366,6 +384,29 @@ func containsExcludedComponent(path, rootDir string, excludeMap map[string]bool,
 	}
 
 	return false
+}
+
+func excludedComponent(path, rootDir string, excludeMap map[string]bool, regexes []*regexp.Regexp) string {
+	rel, err := filepath.Rel(rootDir, path)
+	if err != nil || rel == "." {
+		return ""
+	}
+
+	for p := rel; p != "."; p = filepath.Dir(p) {
+		comp := filepath.Base(p)
+		if excludeMap[comp] {
+			return comp
+		}
+		for _, re := range regexes {
+			if re.MatchString(comp) {
+				return comp
+			}
+		}
+		if p == filepath.Dir(p) {
+			break
+		}
+	}
+	return ""
 }
 
 func (c *Config) GetDepth(path string) int {

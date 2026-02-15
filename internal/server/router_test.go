@@ -34,6 +34,10 @@ func (m *mockRouterIndexer) Stats() *config.IndexStats {
 	return &config.IndexStats{TotalFiles: 100}
 }
 
+func (m *mockRouterIndexer) ListFiles(prefix string, limit int) ([]indexer.FileEntry, int, error) {
+	return nil, 0, nil
+}
+
 type mockRouterWatcher struct {
 	running bool
 }

@@ -1089,6 +1089,39 @@ func (i *Indexer) GetDocCount() (uint64, error) {
 	return i.index.DocCount()
 }
 
+type FileEntry struct {
+	Path    string    `json:"path"`
+	ModTime time.Time `json:"mod_time"`
+	Size    int64     `json:"size"`
+}
+
+func (i *Indexer) ListFiles(prefix string, limit int) ([]FileEntry, int, error) {
+	var files []FileEntry
+	total := 0
+
+	iterFn := func(path string, meta metastore.FileMeta) error {
+		total++
+		if len(files) < limit {
+			files = append(files, FileEntry{
+				Path:    path,
+				ModTime: meta.ModTime,
+				Size:    meta.Size,
+			})
+		}
+		return nil
+	}
+
+	var err error
+	switch {
+	case prefix != "":
+		err = i.meta.ForEachPrefix(prefix, iterFn)
+	default:
+		err = i.meta.ForEach(iterFn)
+	}
+
+	return files, total, err
+}
+
 func (i *Indexer) Close() error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -1099,7 +1132,8 @@ func (i *Indexer) Close() error {
 func walkFollowSymlinks(root string, fn filepath.WalkFunc) error {
 	info, err := os.Stat(root)
 	if err != nil {
-		return fn(root, nil, err)
+		log.Warnf("skipping inaccessible root %s: %v", root, err)
+		return nil
 	}
 	return symWalk(root, info, fn, make(map[string]bool))
 }
@@ -1135,9 +1169,7 @@ func symWalk(path string, info os.FileInfo, fn filepath.WalkFunc, visited map[st
 		child := filepath.Join(path, e.Name())
 		childInfo, err := os.Stat(child)
 		if err != nil {
-			if fnErr := fn(child, nil, err); fnErr != nil && fnErr != filepath.SkipDir {
-				return fnErr
-			}
+			log.Warnf("skipping inaccessible path %s: %v", child, err)
 			continue
 		}
 		if err := symWalk(child, childInfo, fn, visited); err != nil {
