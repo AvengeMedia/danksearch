@@ -13,12 +13,13 @@ import (
 )
 
 type IndexPath struct {
-	Path          string   `toml:"path"`
-	MaxDepth      int      `toml:"max_depth"`
-	ExcludeHidden bool     `toml:"exclude_hidden"`
-	ExcludeDirs   []string `toml:"exclude_dirs"`
-	ExtractExif   bool     `toml:"extract_exif"`
-	Watch         *bool    `toml:"watch,omitempty"` // nil = true (default), false = skip fsnotify
+	Path             string   `toml:"path"`
+	MaxDepth         int      `toml:"max_depth"`
+	ExcludeHidden    bool     `toml:"exclude_hidden"`
+	ExcludeDirs      []string `toml:"exclude_dirs"`
+	ExtractExif      bool     `toml:"extract_exif"`
+	ExtractXattrTags bool     `toml:"extract_xattr_tags"`
+	Watch            *bool    `toml:"watch,omitempty"` // nil = true (default), false = skip fsnotify
 
 	excludeDirsMap   map[string]bool
 	excludeDirsRegex []*regexp.Regexp

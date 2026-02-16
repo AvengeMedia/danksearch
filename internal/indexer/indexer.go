@@ -47,6 +47,7 @@ type Document struct {
 	ExifFNumber    float64   `json:"exif_fnumber,omitempty"`
 	ExifExposure   string    `json:"exif_exposure,omitempty"`
 	ExifFocalLen   float64   `json:"exif_focal_length,omitempty"`
+	XattrTags      []string  `json:"xattr_tags,omitempty"`
 }
 
 type Indexer struct {
@@ -85,6 +86,7 @@ type SearchOptions struct {
 	ExifLatMax      float64  `json:"exif_lat_max,omitempty"`
 	ExifLonMin      float64  `json:"exif_lon_min,omitempty"`
 	ExifLonMax      float64  `json:"exif_lon_max,omitempty"`
+	XattrTags       []string `json:"xattr_tags,omitempty"`
 }
 
 func New(cfg *config.Config) (*Indexer, error) {
@@ -650,6 +652,34 @@ func (i *Indexer) SearchWithOptions(opts *SearchOptions) (*bleve.SearchResult, e
 		lonQuery := bleve.NewNumericRangeInclusiveQuery(minLon, maxLon, nil, nil)
 		lonQuery.SetField("exif_longitude")
 		filters = append(filters, lonQuery)
+	}
+
+	if len(opts.XattrTags) > 0 {
+		tagsQuery := bleve.NewBooleanQuery()
+		for _, tag := range opts.XattrTags {
+			if len(tag) == 0 {
+				continue
+			}
+
+			addFn := tagsQuery.AddShould
+			switch tag[0] {
+			case '-':
+				tag = tag[1:]
+				addFn = tagsQuery.AddMustNot
+			case '+':
+				tag = tag[1:]
+				addFn = tagsQuery.AddMust
+			}
+
+			if len(tag) == 0 {
+				continue
+			}
+
+			tagQuery := bleve.NewMatchQuery(tag)
+			tagQuery.SetField("xattr_tags")
+			addFn(tagQuery)
+		}
+		filters = append(filters, tagsQuery)
 	}
 
 	// Combine main query with filters
