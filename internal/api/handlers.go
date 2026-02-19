@@ -57,6 +57,7 @@ type SearchInput struct {
 	ExifLatMax      float64  `query:"exif_lat_max" doc:"Maximum GPS latitude" example:"41.0"`
 	ExifLonMin      float64  `query:"exif_lon_min" doc:"Minimum GPS longitude" example:"-74.0"`
 	ExifLonMax      float64  `query:"exif_lon_max" doc:"Maximum GPS longitude" example:"-73.0"`
+	XattrTags       string   `query:"xattr_tags" doc:"Tags" example:"+must,should,-must-not"`
 }
 
 type SearchOutput struct {
@@ -122,6 +123,7 @@ func RegisterHandlers(srv *Server, api huma.API) {
 			ExifLatMax:      input.ExifLatMax,
 			ExifLonMin:      input.ExifLonMin,
 			ExifLonMax:      input.ExifLonMax,
+			XattrTags:       input.XattrTags,
 		}
 
 		result, err := srv.Indexer.SearchWithOptions(opts)

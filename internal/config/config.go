@@ -123,11 +123,12 @@ func Default() *Config {
 	}
 
 	cfg := &Config{
-		IndexPath:     getDefaultIndexPath(),
-		ListenAddr:    ":43654",
-		MaxFileBytes:  2 * 1024 * 1024,
-		WorkerCount:   workerCount,
-		IndexAllFiles: true,
+		IndexPath:      getDefaultIndexPath(),
+		ListenAddr:     ":43654",
+		MaxFileBytes:   2 * 1024 * 1024,
+		WorkerCount:    workerCount,
+		IndexAllFiles:  true,
+		IndexXattrTags: true,
 		IndexPaths: []IndexPath{
 			{
 				Path:          home,

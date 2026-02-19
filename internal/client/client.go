@@ -133,6 +133,7 @@ type SearchOptions struct {
 	ExifLatMax      float64
 	ExifLonMin      float64
 	ExifLonMax      float64
+	XattrTags       string
 }
 
 func Search(query string, limit int) (*bleve.SearchResult, error) {
@@ -223,6 +224,9 @@ func SearchWithOptions(opts *SearchOptions) (*bleve.SearchResult, error) {
 	}
 	if opts.ExifLonMax != 0 {
 		params["exif_lon_max"] = opts.ExifLonMax
+	}
+	if opts.XattrTags != "" {
+		params["xattr_tags"] = opts.XattrTags
 	}
 
 	result, err := sendRequest("search", params)

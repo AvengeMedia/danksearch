@@ -90,7 +90,7 @@ type SearchOptions struct {
 	ExifLatMax      float64  `json:"exif_lat_max,omitempty"`
 	ExifLonMin      float64  `json:"exif_lon_min,omitempty"`
 	ExifLonMax      float64  `json:"exif_lon_max,omitempty"`
-	XattrTags       []string `json:"xattr_tags,omitempty"`
+	XattrTags       string   `json:"xattr_tags,omitempty"`
 }
 
 func New(cfg *config.Config) (*Indexer, error) {
@@ -312,6 +312,10 @@ func buildIndexMapping() mapping.IndexMapping {
 	exifFocalField.Store = true
 	docMapping.AddFieldMappingsAt("exif_focal_length", exifFocalField)
 
+	xattrTagsField := bleve.NewKeywordFieldMapping()
+	xattrTagsField.Store = true
+	docMapping.AddFieldMappingsAt("xattr_tags", xattrTagsField)
+
 	m.DefaultMapping = docMapping
 	return m
 }
@@ -403,8 +407,13 @@ func (i *Indexer) readDocument(path string, info os.FileInfo) (*Document, error)
 }
 
 func (i *Indexer) extractXattrTags(path string, doc *Document) {
-	if tags, err := xattr.Get(path, "user.xdg.tags"); err != nil {
-		doc.XattrTags, _ = csv.NewReader(bytes.NewReader(tags)).Read()
+	tags, err := xattr.Get(path, "user.xdg.tags")
+	if err != nil || len(tags) == 0 {
+		return
+	}
+	parsedTags, _ := csv.NewReader(bytes.NewReader(tags)).Read()
+	if len(parsedTags) > 0 {
+		doc.XattrTags = parsedTags
 		slices.Sort(doc.XattrTags)
 		doc.XattrTags = slices.Compact(doc.XattrTags)
 	}
@@ -670,32 +679,35 @@ func (i *Indexer) SearchWithOptions(opts *SearchOptions) (*bleve.SearchResult, e
 		filters = append(filters, lonQuery)
 	}
 
-	if i.config.IndexXattrTags && len(opts.XattrTags) > 0 {
-		tagsQuery := bleve.NewBooleanQuery()
-		for _, tag := range opts.XattrTags {
-			if len(tag) == 0 {
-				continue
-			}
+	if i.config.IndexXattrTags && opts.XattrTags != "" {
+		tags, _ := csv.NewReader(strings.NewReader(opts.XattrTags)).Read()
+		if len(tags) > 0 {
+			tagsQuery := bleve.NewBooleanQuery()
+			for _, tag := range tags {
+				if len(tag) == 0 {
+					continue
+				}
 
-			addFn := tagsQuery.AddShould
-			switch tag[0] {
-			case '-':
-				tag = tag[1:]
-				addFn = tagsQuery.AddMustNot
-			case '+':
-				tag = tag[1:]
-				addFn = tagsQuery.AddMust
-			}
+				addFn := tagsQuery.AddShould
+				switch tag[0] {
+				case '-':
+					tag = tag[1:]
+					addFn = tagsQuery.AddMustNot
+				case '+':
+					tag = tag[1:]
+					addFn = tagsQuery.AddMust
+				}
 
-			if len(tag) == 0 {
-				continue
-			}
+				if len(tag) == 0 {
+					continue
+				}
 
-			tagQuery := bleve.NewMatchQuery(tag)
-			tagQuery.SetField("xattr_tags")
-			addFn(tagQuery)
+				tagQuery := bleve.NewTermQuery(tag)
+				tagQuery.SetField("xattr_tags")
+				addFn(tagQuery)
+			}
+			filters = append(filters, tagsQuery)
 		}
-		filters = append(filters, tagsQuery)
 	}
 
 	// Combine main query with filters

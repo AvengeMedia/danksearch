@@ -385,6 +385,7 @@ func runSearch(cmd *cobra.Command, args []string) error {
 		ExifLatMax:      searchExifLatMax,
 		ExifLonMin:      searchExifLonMin,
 		ExifLonMax:      searchExifLonMax,
+		XattrTags:       searchXattrTags,
 	}
 
 	result, err := client.SearchWithOptions(clientOpts)
@@ -444,6 +445,7 @@ func runSearch(cmd *cobra.Command, args []string) error {
 		ExifLatMax:      searchExifLatMax,
 		ExifLonMin:      searchExifLonMin,
 		ExifLonMax:      searchExifLonMax,
+		XattrTags:       searchXattrTags,
 	}
 
 	result, err = idx.SearchWithOptions(indexerOpts)
