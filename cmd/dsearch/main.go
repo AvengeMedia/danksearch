@@ -66,6 +66,7 @@ var (
 	searchExifLonMin      float64
 	searchExifLonMax      float64
 	searchXattrTags       string
+	searchType            string
 )
 
 var rootCmd = &cobra.Command{
@@ -153,13 +154,27 @@ var watchStopCmd = &cobra.Command{
 	RunE:  runWatchStop,
 }
 
+var versionJSON bool
+
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Show version information",
 	Run: func(cmd *cobra.Command, args []string) {
+		if versionJSON {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			enc.Encode(map[string]any{
+				"version":      Version,
+				"build_time":   buildTime,
+				"commit":       commit,
+				"index_schema": indexer.SchemaVersion,
+			})
+			return
+		}
 		log.Infof("dsearch version %s", Version)
 		log.Infof("  Build time: %s", buildTime)
 		log.Infof("  Commit: %s", commit)
+		log.Infof("  Index schema: %d", indexer.SchemaVersion)
 	},
 }
 
@@ -202,6 +217,9 @@ func init() {
 	searchCmd.Flags().Float64Var(&searchExifLonMin, "exif-lon-min", 0, "minimum GPS longitude")
 	searchCmd.Flags().Float64Var(&searchExifLonMax, "exif-lon-max", 0, "maximum GPS longitude")
 	searchCmd.Flags().StringVar(&searchXattrTags, "xattr-tags", "", "tags in user.xdg.tags xattr")
+	searchCmd.Flags().StringVarP(&searchType, "type", "t", "", "filter by type (file, dir, all)")
+
+	versionCmd.Flags().BoolVar(&versionJSON, "json", false, "output version in JSON format")
 
 	indexFilesCmd.Flags().IntVar(&filesLimit, "limit", 100, "maximum number of files to list")
 
@@ -274,13 +292,17 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if count == 0 {
-		log.Infof("index is empty, building initial index...")
+	if count == 0 || idx.NeedsReindex() {
+		reason := "empty index"
+		if count > 0 {
+			reason = "schema upgrade"
+		}
+		log.Infof("index requires rebuild (%s), reindexing...", reason)
 		go func() {
 			if err := idx.ReindexAll(); err != nil {
-				log.Errorf("initial index build failed: %v", err)
+				log.Errorf("reindex failed: %v", err)
 			} else {
-				log.Infof("initial index build complete")
+				log.Infof("reindex complete")
 			}
 		}()
 	}
@@ -386,6 +408,7 @@ func runSearch(cmd *cobra.Command, args []string) error {
 		ExifLonMin:      searchExifLonMin,
 		ExifLonMax:      searchExifLonMax,
 		XattrTags:       searchXattrTags,
+		Type:            searchType,
 	}
 
 	result, err := client.SearchWithOptions(clientOpts)
@@ -399,6 +422,12 @@ func runSearch(cmd *cobra.Command, args []string) error {
 		log.Infof("found %d results in %s", result.Total, result.Took)
 		for i, hit := range result.Hits {
 			log.Infof("%d. %s (score: %.4f)", i+1, hit.ID, hit.Score)
+		}
+		if len(result.DirectoryHits) > 0 {
+			log.Infof("\ndirectories:")
+			for i, hit := range result.DirectoryHits {
+				log.Infof("%d. %s (score: %.4f)", i+1, hit.ID, hit.Score)
+			}
 		}
 		return nil
 	}
@@ -446,22 +475,38 @@ func runSearch(cmd *cobra.Command, args []string) error {
 		ExifLonMin:      searchExifLonMin,
 		ExifLonMax:      searchExifLonMax,
 		XattrTags:       searchXattrTags,
+		Type:            searchType,
 	}
 
-	result, err = idx.SearchWithOptions(indexerOpts)
-	if err != nil {
-		return err
+	var idxResult *indexer.SearchResult
+	if searchType == "all" {
+		idxResult, err = idx.SearchAll(indexerOpts)
+		if err != nil {
+			return err
+		}
+	} else {
+		bleveResult, err := idx.SearchWithOptions(indexerOpts)
+		if err != nil {
+			return err
+		}
+		idxResult = &indexer.SearchResult{SearchResult: bleveResult}
 	}
 
 	if searchJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		return enc.Encode(result)
+		return enc.Encode(idxResult)
 	}
 
-	log.Infof("found %d results in %s", result.Total, result.Took)
-	for i, hit := range result.Hits {
+	log.Infof("found %d results in %s", idxResult.Total, idxResult.Took)
+	for i, hit := range idxResult.Hits {
 		log.Infof("%d. %s (score: %.4f)", i+1, hit.ID, hit.Score)
+	}
+	if len(idxResult.DirectoryHits) > 0 {
+		log.Infof("\ndirectories:")
+		for i, hit := range idxResult.DirectoryHits {
+			log.Infof("%d. %s (score: %.4f)", i+1, hit.ID, hit.Score)
+		}
 	}
 
 	return nil

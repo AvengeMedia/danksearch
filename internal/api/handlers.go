@@ -13,6 +13,7 @@ import (
 type IndexerInterface interface {
 	Search(query string, limit int) (*bleve.SearchResult, error)
 	SearchWithOptions(opts *indexer.SearchOptions) (*bleve.SearchResult, error)
+	SearchAll(opts *indexer.SearchOptions) (*indexer.SearchResult, error)
 	ReindexAll() error
 	SyncIncremental() error
 	Stats() *config.IndexStats
@@ -58,10 +59,11 @@ type SearchInput struct {
 	ExifLonMin      float64  `query:"exif_lon_min" doc:"Minimum GPS longitude" example:"-74.0"`
 	ExifLonMax      float64  `query:"exif_lon_max" doc:"Maximum GPS longitude" example:"-73.0"`
 	XattrTags       string   `query:"xattr_tags" doc:"Tags" example:"+must,should,-must-not"`
+	Type            string   `query:"type" enum:"file,dir,all," doc:"Filter by type" example:"dir"`
 }
 
 type SearchOutput struct {
-	Body *bleve.SearchResult
+	Body *indexer.SearchResult
 }
 
 type ReindexOutput struct {
@@ -124,6 +126,15 @@ func RegisterHandlers(srv *Server, api huma.API) {
 			ExifLonMin:      input.ExifLonMin,
 			ExifLonMax:      input.ExifLonMax,
 			XattrTags:       input.XattrTags,
+			Type:            input.Type,
+		}
+
+		if input.Type == "all" {
+			result, err := srv.Indexer.SearchAll(opts)
+			if err != nil {
+				return nil, huma.Error400BadRequest("search failed", err)
+			}
+			return &SearchOutput{Body: result}, nil
 		}
 
 		result, err := srv.Indexer.SearchWithOptions(opts)
@@ -131,7 +142,7 @@ func RegisterHandlers(srv *Server, api huma.API) {
 			return nil, huma.Error400BadRequest("search failed", err)
 		}
 
-		return &SearchOutput{Body: result}, nil
+		return &SearchOutput{Body: &indexer.SearchResult{SearchResult: result}}, nil
 	})
 
 	huma.Register(api, huma.Operation{

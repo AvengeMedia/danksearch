@@ -14,6 +14,7 @@ import (
 type IndexerInterface interface {
 	Search(query string, limit int) (*bleve.SearchResult, error)
 	SearchWithOptions(opts *indexer.SearchOptions) (*bleve.SearchResult, error)
+	SearchAll(opts *indexer.SearchOptions) (*indexer.SearchResult, error)
 	ReindexAll() error
 	SyncIncremental() error
 	Stats() *config.IndexStats
@@ -108,6 +109,12 @@ func (r *Router) handleSearch(conn net.Conn, req models.Request) {
 	if modAfter, ok := req.Params["modified_after"].(string); ok {
 		opts.ModifiedAfter = modAfter
 	}
+	if folder, ok := req.Params["folder"].(string); ok {
+		opts.Folder = folder
+	}
+	if t, ok := req.Params["type"].(string); ok {
+		opts.Type = t
+	}
 	if facets, ok := req.Params["facets"].([]any); ok {
 		opts.Facets = make([]string, len(facets))
 		for i, f := range facets {
@@ -117,13 +124,23 @@ func (r *Router) handleSearch(conn net.Conn, req models.Request) {
 		}
 	}
 
+	if opts.Type == "all" {
+		result, err := r.indexer.SearchAll(opts)
+		if err != nil {
+			models.RespondError(conn, req.ID, fmt.Sprintf("search failed: %v", err))
+			return
+		}
+		models.Respond(conn, req.ID, result)
+		return
+	}
+
 	result, err := r.indexer.SearchWithOptions(opts)
 	if err != nil {
 		models.RespondError(conn, req.ID, fmt.Sprintf("search failed: %v", err))
 		return
 	}
 
-	models.Respond(conn, req.ID, result)
+	models.Respond(conn, req.ID, &indexer.SearchResult{SearchResult: result})
 }
 
 func (r *Router) handleReindex(conn net.Conn, req models.Request) {

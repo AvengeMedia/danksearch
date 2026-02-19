@@ -22,6 +22,10 @@ func (m *mockHTTPIndexer) SearchWithOptions(opts *indexer.SearchOptions) (*bleve
 	return &bleve.SearchResult{Total: 0}, nil
 }
 
+func (m *mockHTTPIndexer) SearchAll(opts *indexer.SearchOptions) (*indexer.SearchResult, error) {
+	return &indexer.SearchResult{SearchResult: &bleve.SearchResult{Total: 0}}, nil
+}
+
 func (m *mockHTTPIndexer) ReindexAll() error {
 	return nil
 }

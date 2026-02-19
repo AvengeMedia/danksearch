@@ -10,6 +10,7 @@ import (
 )
 
 var bucketName = []byte("files")
+var schemaBucket = []byte("schema")
 
 type Store struct {
 	db *bolt.DB
@@ -28,7 +29,10 @@ func New(indexPath string) (*Store, error) {
 	}
 
 	err = db.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists(bucketName)
+		if _, err := tx.CreateBucketIfNotExists(bucketName); err != nil {
+			return err
+		}
+		_, err := tx.CreateBucketIfNotExists(schemaBucket)
 		return err
 	})
 	if err != nil {
@@ -110,6 +114,26 @@ func (s *Store) Count() (int, error) {
 		return nil
 	})
 	return count, err
+}
+
+func (s *Store) GetMeta(key string) (string, error) {
+	var val string
+	err := s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(schemaBucket)
+		v := b.Get([]byte(key))
+		if v != nil {
+			val = string(v)
+		}
+		return nil
+	})
+	return val, err
+}
+
+func (s *Store) PutMeta(key, value string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(schemaBucket)
+		return b.Put([]byte(key), []byte(value))
+	})
 }
 
 func (s *Store) Close() error {

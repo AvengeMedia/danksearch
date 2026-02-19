@@ -22,6 +22,10 @@ func (m *mockRouterIndexer) SearchWithOptions(opts *indexer.SearchOptions) (*ble
 	return &bleve.SearchResult{Total: 5}, nil
 }
 
+func (m *mockRouterIndexer) SearchAll(opts *indexer.SearchOptions) (*indexer.SearchResult, error) {
+	return &indexer.SearchResult{SearchResult: &bleve.SearchResult{Total: 5}}, nil
+}
+
 func (m *mockRouterIndexer) ReindexAll() error {
 	return nil
 }

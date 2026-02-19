@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,10 +28,13 @@ import (
 	_ "github.com/blevesearch/bleve/v2/analysis/token/ngram"
 	_ "github.com/blevesearch/bleve/v2/analysis/tokenizer/single"
 	"github.com/blevesearch/bleve/v2/mapping"
+	"github.com/blevesearch/bleve/v2/search"
 	query "github.com/blevesearch/bleve/v2/search/query"
 	"github.com/pkg/xattr"
 	"github.com/rwcarlsen/goexif/exif"
 )
+
+const SchemaVersion = 2
 
 type Document struct {
 	Path           string    `json:"path"`
@@ -52,6 +56,12 @@ type Document struct {
 	ExifExposure   string    `json:"exif_exposure,omitempty"`
 	ExifFocalLen   float64   `json:"exif_focal_length,omitempty"`
 	XattrTags      []string  `json:"xattr_tags,omitempty"`
+	DocType        string    `json:"doc_type"`
+}
+
+type SearchResult struct {
+	*bleve.SearchResult
+	DirectoryHits search.DocumentMatchCollection `json:"directory_hits,omitempty"`
 }
 
 type Indexer struct {
@@ -91,6 +101,7 @@ type SearchOptions struct {
 	ExifLonMin      float64  `json:"exif_lon_min,omitempty"`
 	ExifLonMax      float64  `json:"exif_lon_max,omitempty"`
 	XattrTags       string   `json:"xattr_tags,omitempty"`
+	Type            string   `json:"type,omitempty"`
 }
 
 func New(cfg *config.Config) (*Indexer, error) {
@@ -316,6 +327,12 @@ func buildIndexMapping() mapping.IndexMapping {
 	xattrTagsField.Store = true
 	docMapping.AddFieldMappingsAt("xattr_tags", xattrTagsField)
 
+	docTypeField := bleve.NewTextFieldMapping()
+	docTypeField.Store = true
+	docTypeField.Analyzer = "keyword"
+	docTypeField.IncludeInAll = false
+	docMapping.AddFieldMappingsAt("doc_type", docTypeField)
+
 	m.DefaultMapping = docMapping
 	return m
 }
@@ -334,6 +351,29 @@ func (i *Indexer) Index(path string) error {
 	}
 
 	if info.IsDir() {
+		doc := &Document{
+			Path:           path,
+			Filename:       filepath.Base(path),
+			FilenameSub:    filepath.Base(path),
+			FilenamePrefix: filepath.Base(path),
+			ContentType:    "inode/directory",
+			ModTime:        info.ModTime(),
+			DocType:        "dir",
+		}
+
+		i.mu.Lock()
+		err = i.index.Index(path, doc)
+		i.mu.Unlock()
+
+		if err != nil {
+			return errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, path, err)
+		}
+
+		if err := i.meta.Put(path, metastore.FileMeta{ModTime: info.ModTime(), Size: 0}); err != nil {
+			log.Debugf("failed to update metastore for %s: %v", path, err)
+		}
+		i.indexComplete.Store(true)
+		log.Debugf("indexed directory %s", path)
 		return nil
 	}
 
@@ -375,6 +415,7 @@ func (i *Indexer) readDocument(path string, info os.FileInfo) (*Document, error)
 		ContentType:    contentType,
 		ModTime:        info.ModTime(),
 		Size:           info.Size(),
+		DocType:        "file",
 	}
 
 	if i.config.IsTextFile(path) {
@@ -575,6 +616,25 @@ func (i *Indexer) SearchWithOptions(opts *SearchOptions) (*bleve.SearchResult, e
 		folderQuery := bleve.NewPrefixQuery(folderPrefix)
 		folderQuery.SetField("path")
 		filters = append(filters, folderQuery)
+	}
+
+	switch opts.Type {
+	case "dir":
+		typeQuery := bleve.NewTermQuery("dir")
+		typeQuery.SetField("doc_type")
+		filters = append(filters, typeQuery)
+	case "file":
+		typeQuery := bleve.NewTermQuery("file")
+		typeQuery.SetField("doc_type")
+		filters = append(filters, typeQuery)
+	case "all":
+		// no type filter — return everything
+	default: // "" — exclude dirs (backwards compat with indexes lacking doc_type)
+		dirQuery := bleve.NewTermQuery("dir")
+		dirQuery.SetField("doc_type")
+		excludeDirs := bleve.NewBooleanQuery()
+		excludeDirs.AddMustNot(dirQuery)
+		filters = append(filters, excludeDirs)
 	}
 
 	if opts.ExifMake != "" {
@@ -796,6 +856,27 @@ func (i *Indexer) SearchWithOptions(opts *SearchOptions) (*bleve.SearchResult, e
 	return result, nil
 }
 
+func (i *Indexer) SearchAll(opts *SearchOptions) (*SearchResult, error) {
+	fileOpts := *opts
+	fileOpts.Type = "file"
+	fileResult, err := i.SearchWithOptions(&fileOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	dirOpts := *opts
+	dirOpts.Type = "dir"
+	dirResult, err := i.SearchWithOptions(&dirOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	return &SearchResult{
+		SearchResult:  fileResult,
+		DirectoryHits: dirResult.Hits,
+	}, nil
+}
+
 func (i *Indexer) buildFilenameQuery(queryStr string, boostPrefix, boostContains float64) query.Query {
 	q := strings.TrimSpace(queryStr)
 	if q == "" {
@@ -906,6 +987,10 @@ func (i *Indexer) ReindexAll() error {
 				if !i.config.ShouldIndexDir(path) {
 					return filepath.SkipDir
 				}
+
+				if err := i.Index(path); err != nil {
+					log.Debugf("failed to index directory %s: %v", path, err)
+				}
 				return nil
 			}
 
@@ -945,6 +1030,10 @@ func (i *Indexer) ReindexAll() error {
 
 	if err := i.saveStatsDocument(int(totalFiles), totalBytes, duration); err != nil {
 		log.Warnf("failed to save stats: %v", err)
+	}
+
+	if err := i.SaveSchemaVersion(); err != nil {
+		log.Warnf("failed to save schema version: %v", err)
 	}
 
 	log.Infof("reindex complete: %d files, %d bytes, took %s", totalFiles, totalBytes, duration)
@@ -1072,6 +1161,26 @@ func (i *Indexer) SyncIncremental() error {
 				if !i.config.ShouldIndexDir(path) {
 					return filepath.SkipDir
 				}
+
+				// Index the directory and track it for sync
+				pathsMu.Lock()
+				existing, exists := indexedPaths[path]
+				delete(indexedPaths, path)
+				pathsMu.Unlock()
+
+				switch {
+				case !exists:
+					atomic.AddInt64(&added, 1)
+				case !existing.ModTime.Equal(info.ModTime()):
+					atomic.AddInt64(&updated, 1)
+				default:
+					atomic.AddInt64(&unchanged, 1)
+					return nil
+				}
+
+				if err := i.Index(path); err != nil {
+					log.Debugf("failed to index directory %s: %v", path, err)
+				}
 				return nil
 			}
 
@@ -1135,6 +1244,10 @@ func (i *Indexer) SyncIncremental() error {
 		log.Warnf("failed to save stats: %v", err)
 	}
 
+	if err := i.SaveSchemaVersion(); err != nil {
+		log.Warnf("failed to save schema version: %v", err)
+	}
+
 	log.Infof("incremental sync complete: +%d new, ~%d updated, -%d deleted, =%d unchanged, took %s",
 		added, updated, deleted, unchanged, duration)
 
@@ -1178,6 +1291,22 @@ func (i *Indexer) ListFiles(prefix string, limit int) ([]FileEntry, int, error) 
 	}
 
 	return files, total, err
+}
+
+func (i *Indexer) NeedsReindex() bool {
+	val, err := i.meta.GetMeta("schema_version")
+	if err != nil || val == "" {
+		return true
+	}
+	v, err := strconv.Atoi(val)
+	if err != nil {
+		return true
+	}
+	return v != SchemaVersion
+}
+
+func (i *Indexer) SaveSchemaVersion() error {
+	return i.meta.PutMeta("schema_version", strconv.Itoa(SchemaVersion))
 }
 
 func (i *Indexer) Close() error {

@@ -11,7 +11,13 @@ import (
 
 	"github.com/AvengeMedia/danksearch/internal/server/models"
 	bleve "github.com/blevesearch/bleve/v2"
+	"github.com/blevesearch/bleve/v2/search"
 )
+
+type SearchResult struct {
+	*bleve.SearchResult
+	DirectoryHits search.DocumentMatchCollection `json:"directory_hits,omitempty"`
+}
 
 func getSocketDir() string {
 	if runtime := os.Getenv("XDG_RUNTIME_DIR"); runtime != "" {
@@ -134,16 +140,17 @@ type SearchOptions struct {
 	ExifLonMin      float64
 	ExifLonMax      float64
 	XattrTags       string
+	Type            string
 }
 
-func Search(query string, limit int) (*bleve.SearchResult, error) {
+func Search(query string, limit int) (*SearchResult, error) {
 	return SearchWithOptions(&SearchOptions{
 		Query: query,
 		Limit: limit,
 	})
 }
 
-func SearchWithOptions(opts *SearchOptions) (*bleve.SearchResult, error) {
+func SearchWithOptions(opts *SearchOptions) (*SearchResult, error) {
 	params := map[string]any{
 		"query": opts.Query,
 		"limit": opts.Limit,
@@ -228,13 +235,16 @@ func SearchWithOptions(opts *SearchOptions) (*bleve.SearchResult, error) {
 	if opts.XattrTags != "" {
 		params["xattr_tags"] = opts.XattrTags
 	}
+	if opts.Type != "" {
+		params["type"] = opts.Type
+	}
 
 	result, err := sendRequest("search", params)
 	if err != nil {
 		return nil, err
 	}
 
-	var searchResult bleve.SearchResult
+	searchResult := SearchResult{SearchResult: &bleve.SearchResult{}}
 	if err := json.Unmarshal(result, &searchResult); err != nil {
 		return nil, err
 	}
