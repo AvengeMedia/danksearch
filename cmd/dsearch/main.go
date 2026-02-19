@@ -65,6 +65,7 @@ var (
 	searchExifLatMax      float64
 	searchExifLonMin      float64
 	searchExifLonMax      float64
+	searchXattrTags       string
 )
 
 var rootCmd = &cobra.Command{
@@ -200,6 +201,7 @@ func init() {
 	searchCmd.Flags().Float64Var(&searchExifLatMax, "exif-lat-max", 0, "maximum GPS latitude")
 	searchCmd.Flags().Float64Var(&searchExifLonMin, "exif-lon-min", 0, "minimum GPS longitude")
 	searchCmd.Flags().Float64Var(&searchExifLonMax, "exif-lon-max", 0, "maximum GPS longitude")
+	searchCmd.Flags().StringVar(&searchXattrTags, "xattr-tags", "", "tags in user.xdg.tags xattr")
 
 	indexFilesCmd.Flags().IntVar(&filesLimit, "limit", 100, "maximum number of files to list")
 
@@ -383,6 +385,7 @@ func runSearch(cmd *cobra.Command, args []string) error {
 		ExifLatMax:      searchExifLatMax,
 		ExifLonMin:      searchExifLonMin,
 		ExifLonMax:      searchExifLonMax,
+		XattrTags:       searchXattrTags,
 	}
 
 	result, err := client.SearchWithOptions(clientOpts)
@@ -442,6 +445,7 @@ func runSearch(cmd *cobra.Command, args []string) error {
 		ExifLatMax:      searchExifLatMax,
 		ExifLonMin:      searchExifLonMin,
 		ExifLonMax:      searchExifLonMax,
+		XattrTags:       searchXattrTags,
 	}
 
 	result, err = idx.SearchWithOptions(indexerOpts)

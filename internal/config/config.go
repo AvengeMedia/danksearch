@@ -13,25 +13,27 @@ import (
 )
 
 type IndexPath struct {
-	Path          string   `toml:"path"`
-	MaxDepth      int      `toml:"max_depth"`
-	ExcludeHidden bool     `toml:"exclude_hidden"`
-	ExcludeDirs   []string `toml:"exclude_dirs"`
-	ExtractExif   bool     `toml:"extract_exif"`
-	Watch         *bool    `toml:"watch,omitempty"` // nil = true (default), false = skip fsnotify
+	Path             string   `toml:"path"`
+	MaxDepth         int      `toml:"max_depth"`
+	ExcludeHidden    bool     `toml:"exclude_hidden"`
+	ExcludeDirs      []string `toml:"exclude_dirs"`
+	ExtractExif      bool     `toml:"extract_exif"`
+	ExtractXattrTags bool     `toml:"extract_xattr_tags"`
+	Watch            *bool    `toml:"watch,omitempty"` // nil = true (default), false = skip fsnotify
 
 	excludeDirsMap   map[string]bool
 	excludeDirsRegex []*regexp.Regexp
 }
 
 type Config struct {
-	IndexPath     string      `toml:"index_path"`
-	ListenAddr    string      `toml:"listen_addr"`
-	MaxFileBytes  int64       `toml:"max_file_bytes"`
-	WorkerCount   int         `toml:"worker_count"`
-	IndexPaths    []IndexPath `toml:"index_paths"`
-	TextExts      []string    `toml:"text_extensions"`
-	IndexAllFiles bool        `toml:"index_all_files"`
+	IndexPath      string      `toml:"index_path"`
+	ListenAddr     string      `toml:"listen_addr"`
+	MaxFileBytes   int64       `toml:"max_file_bytes"`
+	WorkerCount    int         `toml:"worker_count"`
+	IndexPaths     []IndexPath `toml:"index_paths"`
+	TextExts       []string    `toml:"text_extensions"`
+	IndexAllFiles  bool        `toml:"index_all_files"`
+	IndexXattrTags bool        `toml:"index_xattr_tags"`
 
 	RootDir       string   `toml:"root_dir,omitempty"`
 	MaxDepth      int      `toml:"max_depth,omitempty"`
@@ -121,11 +123,12 @@ func Default() *Config {
 	}
 
 	cfg := &Config{
-		IndexPath:     getDefaultIndexPath(),
-		ListenAddr:    ":43654",
-		MaxFileBytes:  2 * 1024 * 1024,
-		WorkerCount:   workerCount,
-		IndexAllFiles: true,
+		IndexPath:      getDefaultIndexPath(),
+		ListenAddr:     ":43654",
+		MaxFileBytes:   2 * 1024 * 1024,
+		WorkerCount:    workerCount,
+		IndexAllFiles:  true,
+		IndexXattrTags: true,
 		IndexPaths: []IndexPath{
 			{
 				Path:          home,

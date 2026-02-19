@@ -1,13 +1,16 @@
 package indexer
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"encoding/csv"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"mime"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,6 +28,7 @@ import (
 	_ "github.com/blevesearch/bleve/v2/analysis/tokenizer/single"
 	"github.com/blevesearch/bleve/v2/mapping"
 	query "github.com/blevesearch/bleve/v2/search/query"
+	"github.com/pkg/xattr"
 	"github.com/rwcarlsen/goexif/exif"
 )
 
@@ -47,6 +51,7 @@ type Document struct {
 	ExifFNumber    float64   `json:"exif_fnumber,omitempty"`
 	ExifExposure   string    `json:"exif_exposure,omitempty"`
 	ExifFocalLen   float64   `json:"exif_focal_length,omitempty"`
+	XattrTags      []string  `json:"xattr_tags,omitempty"`
 }
 
 type Indexer struct {
@@ -85,6 +90,7 @@ type SearchOptions struct {
 	ExifLatMax      float64  `json:"exif_lat_max,omitempty"`
 	ExifLonMin      float64  `json:"exif_lon_min,omitempty"`
 	ExifLonMax      float64  `json:"exif_lon_max,omitempty"`
+	XattrTags       string   `json:"xattr_tags,omitempty"`
 }
 
 func New(cfg *config.Config) (*Indexer, error) {
@@ -306,6 +312,10 @@ func buildIndexMapping() mapping.IndexMapping {
 	exifFocalField.Store = true
 	docMapping.AddFieldMappingsAt("exif_focal_length", exifFocalField)
 
+	xattrTagsField := bleve.NewKeywordFieldMapping()
+	xattrTagsField.Store = true
+	docMapping.AddFieldMappingsAt("xattr_tags", xattrTagsField)
+
 	m.DefaultMapping = docMapping
 	return m
 }
@@ -389,7 +399,24 @@ func (i *Indexer) readDocument(path string, info os.FileInfo) (*Document, error)
 		i.extractExifData(path, doc)
 	}
 
+	if i.config.IndexXattrTags {
+		i.extractXattrTags(path, doc)
+	}
+
 	return doc, nil
+}
+
+func (i *Indexer) extractXattrTags(path string, doc *Document) {
+	tags, err := xattr.Get(path, "user.xdg.tags")
+	if err != nil || len(tags) == 0 {
+		return
+	}
+	parsedTags, _ := csv.NewReader(bytes.NewReader(tags)).Read()
+	if len(parsedTags) > 0 {
+		doc.XattrTags = parsedTags
+		slices.Sort(doc.XattrTags)
+		doc.XattrTags = slices.Compact(doc.XattrTags)
+	}
 }
 
 func isImageFile(contentType string) bool {
@@ -650,6 +677,37 @@ func (i *Indexer) SearchWithOptions(opts *SearchOptions) (*bleve.SearchResult, e
 		lonQuery := bleve.NewNumericRangeInclusiveQuery(minLon, maxLon, nil, nil)
 		lonQuery.SetField("exif_longitude")
 		filters = append(filters, lonQuery)
+	}
+
+	if i.config.IndexXattrTags && opts.XattrTags != "" {
+		tags, _ := csv.NewReader(strings.NewReader(opts.XattrTags)).Read()
+		if len(tags) > 0 {
+			tagsQuery := bleve.NewBooleanQuery()
+			for _, tag := range tags {
+				if len(tag) == 0 {
+					continue
+				}
+
+				addFn := tagsQuery.AddShould
+				switch tag[0] {
+				case '-':
+					tag = tag[1:]
+					addFn = tagsQuery.AddMustNot
+				case '+':
+					tag = tag[1:]
+					addFn = tagsQuery.AddMust
+				}
+
+				if len(tag) == 0 {
+					continue
+				}
+
+				tagQuery := bleve.NewTermQuery(tag)
+				tagQuery.SetField("xattr_tags")
+				addFn(tagQuery)
+			}
+			filters = append(filters, tagsQuery)
+		}
 	}
 
 	// Combine main query with filters
