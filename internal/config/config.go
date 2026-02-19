@@ -26,13 +26,14 @@ type IndexPath struct {
 }
 
 type Config struct {
-	IndexPath     string      `toml:"index_path"`
-	ListenAddr    string      `toml:"listen_addr"`
-	MaxFileBytes  int64       `toml:"max_file_bytes"`
-	WorkerCount   int         `toml:"worker_count"`
-	IndexPaths    []IndexPath `toml:"index_paths"`
-	TextExts      []string    `toml:"text_extensions"`
-	IndexAllFiles bool        `toml:"index_all_files"`
+	IndexPath      string      `toml:"index_path"`
+	ListenAddr     string      `toml:"listen_addr"`
+	MaxFileBytes   int64       `toml:"max_file_bytes"`
+	WorkerCount    int         `toml:"worker_count"`
+	IndexPaths     []IndexPath `toml:"index_paths"`
+	TextExts       []string    `toml:"text_extensions"`
+	IndexAllFiles  bool        `toml:"index_all_files"`
+	IndexXattrTags bool        `toml:"index_xattr_tags"`
 
 	RootDir       string   `toml:"root_dir,omitempty"`
 	MaxDepth      int      `toml:"max_depth,omitempty"`

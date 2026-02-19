@@ -1,13 +1,16 @@
 package indexer
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"encoding/csv"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"mime"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,6 +28,7 @@ import (
 	_ "github.com/blevesearch/bleve/v2/analysis/tokenizer/single"
 	"github.com/blevesearch/bleve/v2/mapping"
 	query "github.com/blevesearch/bleve/v2/search/query"
+	"github.com/pkg/xattr"
 	"github.com/rwcarlsen/goexif/exif"
 )
 
@@ -391,7 +395,19 @@ func (i *Indexer) readDocument(path string, info os.FileInfo) (*Document, error)
 		i.extractExifData(path, doc)
 	}
 
+	if i.config.IndexXattrTags {
+		i.extractXattrTags(path, doc)
+	}
+
 	return doc, nil
+}
+
+func (i *Indexer) extractXattrTags(path string, doc *Document) {
+	if tags, err := xattr.Get(path, "user.xdg.tags"); err != nil {
+		doc.XattrTags, _ = csv.NewReader(bytes.NewReader(tags)).Read()
+		slices.Sort(doc.XattrTags)
+		doc.XattrTags = slices.Compact(doc.XattrTags)
+	}
 }
 
 func isImageFile(contentType string) bool {
@@ -654,7 +670,7 @@ func (i *Indexer) SearchWithOptions(opts *SearchOptions) (*bleve.SearchResult, e
 		filters = append(filters, lonQuery)
 	}
 
-	if len(opts.XattrTags) > 0 {
+	if i.config.IndexXattrTags && len(opts.XattrTags) > 0 {
 		tagsQuery := bleve.NewBooleanQuery()
 		for _, tag := range opts.XattrTags {
 			if len(tag) == 0 {

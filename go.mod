@@ -10,6 +10,7 @@ require (
 	github.com/danielgtaylor/huma/v2 v2.35.0
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-chi/chi/v5 v5.2.5
+	github.com/pkg/xattr v0.4.12
 	github.com/rwcarlsen/goexif v0.0.0-20190401172101-9e8deecbddbd
 	github.com/spf13/cobra v1.10.2
 	go.etcd.io/bbolt v1.4.3
