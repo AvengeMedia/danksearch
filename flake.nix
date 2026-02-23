@@ -15,16 +15,16 @@
 
       forAllSystems = (f:
         nixpkgs.lib.genAttrs supportedSystems (system:
-          f nixpkgs.legacyPackages.${system}
+          f nixpkgs.legacyPackages.${system} system
         )
       );
 
     in
     {
       packages = forAllSystems (
-        pkgs:
+        pkgs: system:
         let
-          inherit (pkgs) lib system;
+          inherit (pkgs) lib;
           dsearchVersion = "0.2.0";
         in
         {
