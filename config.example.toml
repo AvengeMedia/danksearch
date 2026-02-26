@@ -6,7 +6,7 @@
 index_path = "/home/brandon/.cache/danksearch/index"
 
 # HTTP server listen address
-listen_addr = ":43654"
+listen_addr = "127.0.0.1:43654"
 
 # Maximum file size to index (in bytes)
 max_file_bytes = 2097152  # 2MB
