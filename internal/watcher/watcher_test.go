@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/AvengeMedia/danksearch/internal/config"
+	"github.com/stretchr/testify/suite"
 )
 
 type mockIndexer struct {
@@ -42,30 +43,54 @@ func (m *mockIndexer) deletedCount() int {
 	return len(m.deleted)
 }
 
-func TestNew(t *testing.T) {
+type WatcherSuite struct {
+	suite.Suite
+}
+
+func TestWatcherSuite(t *testing.T) {
+	suite.Run(t, new(WatcherSuite))
+}
+
+func (s *WatcherSuite) TestNew() {
 	cfg := config.Default()
 	idx := &mockIndexer{}
 
 	w, err := New(idx, cfg)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	if w.watcher == nil {
-		t.Error("watcher should not be nil")
-	}
-
-	if w.indexer != idx {
-		t.Error("indexer should match")
-	}
-
-	if w.config != cfg {
-		t.Error("config should match")
-	}
+	s.Require().NoError(err)
+	s.NotNil(w.watcher)
+	s.Equal(idx, w.indexer)
+	s.Equal(cfg, w.config)
 }
 
-func TestWatcher_StartStop(t *testing.T) {
-	tmpDir := t.TempDir()
+func (s *WatcherSuite) TestStartStop() {
+	tmpDir := s.T().TempDir()
+	cfg := config.Default()
+	cfg.IndexPaths = []config.IndexPath{
+		{
+			Path:          tmpDir,
+			MaxDepth:      10,
+			ExcludeHidden: false,
+			ExcludeDirs:   []string{},
+		},
+	}
+	cfg.BuildMaps()
+
+	w, err := New(&mockIndexer{}, cfg)
+	s.Require().NoError(err)
+
+	s.False(w.IsRunning())
+
+	s.Require().NoError(w.Start())
+	s.True(w.IsRunning())
+
+	s.NoError(w.Start(), "Start() should be idempotent")
+
+	s.NoError(w.Stop())
+	s.False(w.IsRunning())
+}
+
+func (s *WatcherSuite) TestFileEvents() {
+	tmpDir := s.T().TempDir()
 	cfg := config.Default()
 	cfg.IndexPaths = []config.IndexPath{
 		{
@@ -79,93 +104,26 @@ func TestWatcher_StartStop(t *testing.T) {
 	idx := &mockIndexer{}
 
 	w, err := New(idx, cfg)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	if w.IsRunning() {
-		t.Error("watcher should not be running initially")
-	}
-
-	if err := w.Start(); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-
-	if !w.IsRunning() {
-		t.Error("watcher should be running after Start()")
-	}
-
-	if err := w.Start(); err != nil {
-		t.Error("Start() should be idempotent")
-	}
-
-	if err := w.Stop(); err != nil {
-		t.Errorf("Stop() error = %v", err)
-	}
-
-	if w.IsRunning() {
-		t.Error("watcher should not be running after Stop()")
-	}
-}
-
-func TestWatcher_FileEvents(t *testing.T) {
-	tmpDir := t.TempDir()
-	cfg := config.Default()
-	cfg.IndexPaths = []config.IndexPath{
-		{
-			Path:          tmpDir,
-			MaxDepth:      10,
-			ExcludeHidden: false,
-			ExcludeDirs:   []string{},
-		},
-	}
-	cfg.BuildMaps()
-	idx := &mockIndexer{}
-
-	w, err := New(idx, cfg)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	if err := w.Start(); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
+	s.Require().NoError(err)
+	s.Require().NoError(w.Start())
 	defer w.Stop()
 
 	testFile := filepath.Join(tmpDir, "test.txt")
-	if err := os.WriteFile(testFile, []byte("hello"), 0644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-
+	s.Require().NoError(os.WriteFile(testFile, []byte("hello"), 0644))
 	time.Sleep(100 * time.Millisecond)
+	s.NotZero(idx.indexedCount())
 
-	if idx.indexedCount() == 0 {
-		t.Error("expected file to be indexed")
-	}
-
-	if err := os.WriteFile(testFile, []byte("world"), 0644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-
+	s.Require().NoError(os.WriteFile(testFile, []byte("world"), 0644))
 	time.Sleep(100 * time.Millisecond)
+	s.GreaterOrEqual(idx.indexedCount(), 2)
 
-	if idx.indexedCount() < 2 {
-		t.Error("expected file to be reindexed after modification")
-	}
-
-	if err := os.Remove(testFile); err != nil {
-		t.Fatalf("Remove() error = %v", err)
-	}
-
+	s.Require().NoError(os.Remove(testFile))
 	time.Sleep(100 * time.Millisecond)
-
-	if idx.deletedCount() == 0 {
-		t.Error("expected file to be deleted from index")
-	}
+	s.NotZero(idx.deletedCount())
 }
 
-func TestWatcher_ExcludedDirs(t *testing.T) {
-	tmpDir := t.TempDir()
+func (s *WatcherSuite) TestExcludedDirs() {
+	tmpDir := s.T().TempDir()
 	cfg := config.Default()
 	cfg.IndexPaths = []config.IndexPath{
 		{
@@ -179,28 +137,16 @@ func TestWatcher_ExcludedDirs(t *testing.T) {
 	idx := &mockIndexer{}
 
 	excludedDir := filepath.Join(tmpDir, ".git")
-	if err := os.Mkdir(excludedDir, 0755); err != nil {
-		t.Fatalf("Mkdir() error = %v", err)
-	}
+	s.Require().NoError(os.Mkdir(excludedDir, 0755))
 
 	w, err := New(idx, cfg)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	if err := w.Start(); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
+	s.Require().NoError(err)
+	s.Require().NoError(w.Start())
 	defer w.Stop()
 
 	testFile := filepath.Join(excludedDir, "config.txt")
-	if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-
+	s.Require().NoError(os.WriteFile(testFile, []byte("test"), 0644))
 	time.Sleep(100 * time.Millisecond)
 
-	if idx.indexedCount() > 0 {
-		t.Error("files in excluded directories should not be indexed")
-	}
+	s.Zero(idx.indexedCount())
 }

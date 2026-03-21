@@ -6,238 +6,110 @@ import (
 	"testing"
 
 	"github.com/AvengeMedia/danksearch/internal/config"
+	"github.com/stretchr/testify/suite"
 )
 
-func TestNew(t *testing.T) {
-	tmpDir := t.TempDir()
-	cfg := config.Default()
-	cfg.IndexPath = filepath.Join(tmpDir, "index")
-	cfg.IndexPaths = []config.IndexPath{
-		{
-			Path:          tmpDir,
-			MaxDepth:      10,
-			ExcludeHidden: false,
-			ExcludeDirs:   []string{},
-		},
-	}
-
-	idx, err := New(cfg)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	defer idx.Close()
-
-	if idx.index == nil {
-		t.Error("index should not be nil")
-	}
-
-	if idx.config != cfg {
-		t.Error("config should match")
-	}
+type IndexerSuite struct {
+	suite.Suite
+	tmpDir string
+	cfg    *config.Config
 }
 
-func TestIndexer_Index(t *testing.T) {
-	tmpDir := t.TempDir()
-	cfg := config.Default()
-	cfg.IndexPath = filepath.Join(tmpDir, "index")
-	cfg.IndexPaths = []config.IndexPath{
+func TestIndexerSuite(t *testing.T) {
+	suite.Run(t, new(IndexerSuite))
+}
+
+func (s *IndexerSuite) SetupTest() {
+	s.tmpDir = s.T().TempDir()
+	s.cfg = config.Default()
+	s.cfg.IndexPath = filepath.Join(s.tmpDir, "index")
+	s.cfg.IndexPaths = []config.IndexPath{
 		{
-			Path:          tmpDir,
+			Path:          s.tmpDir,
 			MaxDepth:      10,
 			ExcludeHidden: false,
 			ExcludeDirs:   []string{},
 		},
 	}
-	cfg.BuildMaps()
+	s.cfg.BuildMaps()
+}
 
-	idx, err := New(cfg)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	defer idx.Close()
+func (s *IndexerSuite) newIndexer() *Indexer {
+	idx, err := New(s.cfg)
+	s.Require().NoError(err)
+	s.T().Cleanup(func() { idx.Close() })
+	return idx
+}
 
-	testFile := filepath.Join(tmpDir, "test.txt")
-	content := "hello world"
-	if err := os.WriteFile(testFile, []byte(content), 0644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
+func (s *IndexerSuite) writeFile(name, content string) string {
+	path := filepath.Join(s.tmpDir, name)
+	s.Require().NoError(os.WriteFile(path, []byte(content), 0644))
+	return path
+}
 
-	if err := idx.Index(testFile); err != nil {
-		t.Errorf("Index() error = %v", err)
-	}
+func (s *IndexerSuite) TestNew() {
+	idx := s.newIndexer()
+	s.NotNil(idx.index)
+	s.Equal(s.cfg, idx.config)
+}
+
+func (s *IndexerSuite) TestIndex() {
+	idx := s.newIndexer()
+	testFile := s.writeFile("test.txt", "hello world")
+
+	s.NoError(idx.Index(testFile))
 
 	result, err := idx.Search("hello", 10)
-	if err != nil {
-		t.Fatalf("Search() error = %v", err)
-	}
-
-	if result.Total == 0 {
-		t.Error("expected at least one search result")
-	}
+	s.Require().NoError(err)
+	s.NotZero(result.Total)
 }
 
-func TestIndexer_Delete(t *testing.T) {
-	tmpDir := t.TempDir()
-	cfg := config.Default()
-	cfg.IndexPath = filepath.Join(tmpDir, "index")
-	cfg.IndexPaths = []config.IndexPath{
-		{
-			Path:          tmpDir,
-			MaxDepth:      10,
-			ExcludeHidden: false,
-			ExcludeDirs:   []string{},
-		},
-	}
-	cfg.BuildMaps()
+func (s *IndexerSuite) TestDelete() {
+	idx := s.newIndexer()
+	testFile := s.writeFile("test.txt", "hello world")
 
-	idx, err := New(cfg)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	defer idx.Close()
-
-	testFile := filepath.Join(tmpDir, "test.txt")
-	content := "hello world"
-	if err := os.WriteFile(testFile, []byte(content), 0644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-
-	if err := idx.Index(testFile); err != nil {
-		t.Fatalf("Index() error = %v", err)
-	}
-
-	if err := idx.Delete(testFile); err != nil {
-		t.Errorf("Delete() error = %v", err)
-	}
+	s.Require().NoError(idx.Index(testFile))
+	s.NoError(idx.Delete(testFile))
 
 	result, err := idx.Search("hello", 10)
-	if err != nil {
-		t.Fatalf("Search() error = %v", err)
-	}
-
-	if result.Total != 0 {
-		t.Errorf("expected zero results after delete, got %d", result.Total)
-	}
+	s.Require().NoError(err)
+	s.Zero(result.Total)
 }
 
-func TestIndexer_Search(t *testing.T) {
-	tmpDir := t.TempDir()
-	cfg := config.Default()
-	cfg.IndexPath = filepath.Join(tmpDir, "index")
-	cfg.IndexPaths = []config.IndexPath{
-		{
-			Path:          tmpDir,
-			MaxDepth:      10,
-			ExcludeHidden: false,
-			ExcludeDirs:   []string{},
-		},
-	}
-	cfg.BuildMaps()
+func (s *IndexerSuite) TestSearch() {
+	idx := s.newIndexer()
+	s.writeFile("test1.txt", "golang programming")
+	s.writeFile("test2.txt", "python scripting")
 
-	idx, err := New(cfg)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	defer idx.Close()
-
-	testFile1 := filepath.Join(tmpDir, "test1.txt")
-	if err := os.WriteFile(testFile1, []byte("golang programming"), 0644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-
-	testFile2 := filepath.Join(tmpDir, "test2.txt")
-	if err := os.WriteFile(testFile2, []byte("python scripting"), 0644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-
-	idx.Index(testFile1)
-	idx.Index(testFile2)
+	idx.Index(filepath.Join(s.tmpDir, "test1.txt"))
+	idx.Index(filepath.Join(s.tmpDir, "test2.txt"))
 
 	result, err := idx.Search("golang", 10)
-	if err != nil {
-		t.Fatalf("Search() error = %v", err)
-	}
-
-	if result.Total == 0 {
-		t.Error("expected at least one result for 'golang'")
-	}
+	s.Require().NoError(err)
+	s.NotZero(result.Total)
 
 	result, err = idx.Search("python", 10)
-	if err != nil {
-		t.Fatalf("Search() error = %v", err)
-	}
-
-	if result.Total == 0 {
-		t.Error("expected at least one result for 'python'")
-	}
+	s.Require().NoError(err)
+	s.NotZero(result.Total)
 }
 
-func TestIndexer_Stats(t *testing.T) {
-	tmpDir := t.TempDir()
-	cfg := config.Default()
-	cfg.IndexPath = filepath.Join(tmpDir, "index")
-
-	idx, err := New(cfg)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	defer idx.Close()
-
-	stats := idx.Stats()
-	if stats == nil {
-		t.Error("Stats() should not return nil")
-	}
+func (s *IndexerSuite) TestStats() {
+	idx := s.newIndexer()
+	s.NotNil(idx.Stats())
 }
 
-func TestReadDocument(t *testing.T) {
-	tmpDir := t.TempDir()
-	cfg := config.Default()
-	cfg.IndexPath = filepath.Join(tmpDir, "index")
-	cfg.IndexPaths = []config.IndexPath{
-		{
-			Path:          tmpDir,
-			MaxDepth:      10,
-			ExcludeHidden: false,
-			ExcludeDirs:   []string{},
-		},
-	}
-	cfg.BuildMaps()
-
-	idx, err := New(cfg)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	defer idx.Close()
-
-	testFile := filepath.Join(tmpDir, "test.go")
+func (s *IndexerSuite) TestReadDocument() {
+	idx := s.newIndexer()
 	content := "package main\n\nfunc main() {}\n"
-	if err := os.WriteFile(testFile, []byte(content), 0644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
+	testFile := s.writeFile("test.go", content)
 
 	info, err := os.Stat(testFile)
-	if err != nil {
-		t.Fatalf("Stat() error = %v", err)
-	}
+	s.Require().NoError(err)
 
 	doc, err := idx.readDocument(testFile, info)
-	if err != nil {
-		t.Fatalf("readDocument() error = %v", err)
-	}
-
-	if doc.Path != testFile {
-		t.Errorf("Path = %v, want %v", doc.Path, testFile)
-	}
-
-	if doc.Filename != "test.go" {
-		t.Errorf("Filename = %v, want test.go", doc.Filename)
-	}
-
-	if doc.Body != content {
-		t.Errorf("Body = %v, want %v", doc.Body, content)
-	}
-
-	if doc.Hash == "" {
-		t.Error("Hash should not be empty")
-	}
+	s.Require().NoError(err)
+	s.Equal(testFile, doc.Path)
+	s.Equal("test.go", doc.Filename)
+	s.Equal(content, doc.Body)
+	s.NotEmpty(doc.Hash)
 }

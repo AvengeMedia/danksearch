@@ -9,6 +9,7 @@ import (
 
 	"github.com/AvengeMedia/danksearch/internal/config"
 	bleve "github.com/blevesearch/bleve/v2"
+	"github.com/stretchr/testify/suite"
 )
 
 type mockIndexer struct {
@@ -56,7 +57,15 @@ func (m *mockWatcher) IsRunning() bool {
 	return m.running
 }
 
-func TestHandler_Search(t *testing.T) {
+type HandlersSuite struct {
+	suite.Suite
+}
+
+func TestHandlersSuite(t *testing.T) {
+	suite.Run(t, new(HandlersSuite))
+}
+
+func (s *HandlersSuite) TestSearch() {
 	tests := []struct {
 		name           string
 		query          string
@@ -64,119 +73,67 @@ func TestHandler_Search(t *testing.T) {
 		mockError      error
 		expectedStatus int
 	}{
-		{
-			name:           "successful search",
-			query:          "test",
-			mockResult:     &bleve.SearchResult{Total: 5},
-			mockError:      nil,
-			expectedStatus: http.StatusOK,
-		},
-		{
-			name:           "missing query parameter",
-			query:          "",
-			mockResult:     nil,
-			mockError:      nil,
-			expectedStatus: http.StatusBadRequest,
-		},
-		{
-			name:           "search error",
-			query:          "test",
-			mockResult:     nil,
-			mockError:      errors.New("search failed"),
-			expectedStatus: http.StatusInternalServerError,
-		},
+		{"successful search", "test", &bleve.SearchResult{Total: 5}, nil, http.StatusOK},
+		{"missing query parameter", "", nil, nil, http.StatusBadRequest},
+		{"search error", "test", nil, errors.New("search failed"), http.StatusInternalServerError},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			idx := &mockIndexer{
-				searchResult: tt.mockResult,
-				searchError:  tt.mockError,
-			}
-			w := &mockWatcher{}
-			h := New(idx, w)
+		s.Run(tt.name, func() {
+			idx := &mockIndexer{searchResult: tt.mockResult, searchError: tt.mockError}
+			h := New(idx, &mockWatcher{})
 
 			req := httptest.NewRequest(http.MethodGet, "/search?q="+tt.query, nil)
 			rec := httptest.NewRecorder()
-
 			h.Search(rec, req)
 
-			if rec.Code != tt.expectedStatus {
-				t.Errorf("status = %v, want %v", rec.Code, tt.expectedStatus)
-			}
+			s.Equal(tt.expectedStatus, rec.Code)
 		})
 	}
 }
 
-func TestHandler_Reindex(t *testing.T) {
+func (s *HandlersSuite) TestReindex() {
 	tests := []struct {
 		name           string
 		method         string
 		reindexError   error
 		expectedStatus int
 	}{
-		{
-			name:           "successful reindex",
-			method:         http.MethodPost,
-			reindexError:   nil,
-			expectedStatus: http.StatusAccepted,
-		},
-		{
-			name:           "wrong method",
-			method:         http.MethodGet,
-			reindexError:   nil,
-			expectedStatus: http.StatusMethodNotAllowed,
-		},
+		{"successful reindex", http.MethodPost, nil, http.StatusAccepted},
+		{"wrong method", http.MethodGet, nil, http.StatusMethodNotAllowed},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		s.Run(tt.name, func() {
 			idx := &mockIndexer{reindexError: tt.reindexError}
-			w := &mockWatcher{}
-			h := New(idx, w)
+			h := New(idx, &mockWatcher{})
 
 			req := httptest.NewRequest(tt.method, "/reindex", nil)
 			rec := httptest.NewRecorder()
-
 			h.Reindex(rec, req)
 
-			if rec.Code != tt.expectedStatus {
-				t.Errorf("status = %v, want %v", rec.Code, tt.expectedStatus)
-			}
+			s.Equal(tt.expectedStatus, rec.Code)
 		})
 	}
 }
 
-func TestHandler_Stats(t *testing.T) {
-	stats := &config.IndexStats{
-		TotalFiles: 100,
-		TotalBytes: 1024,
-	}
-
+func (s *HandlersSuite) TestStats() {
+	stats := &config.IndexStats{TotalFiles: 100, TotalBytes: 1024}
 	idx := &mockIndexer{stats: stats}
-	w := &mockWatcher{}
-	h := New(idx, w)
+	h := New(idx, &mockWatcher{})
 
 	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
 	rec := httptest.NewRecorder()
-
 	h.Stats(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Errorf("status = %v, want %v", rec.Code, http.StatusOK)
-	}
+	s.Equal(http.StatusOK, rec.Code)
 
 	var result config.IndexStats
-	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-
-	if result.TotalFiles != stats.TotalFiles {
-		t.Errorf("TotalFiles = %v, want %v", result.TotalFiles, stats.TotalFiles)
-	}
+	s.Require().NoError(json.NewDecoder(rec.Body).Decode(&result))
+	s.Equal(stats.TotalFiles, result.TotalFiles)
 }
 
-func TestHandler_WatchStart(t *testing.T) {
+func (s *HandlersSuite) TestWatchStart() {
 	tests := []struct {
 		name           string
 		method         string
@@ -184,58 +141,27 @@ func TestHandler_WatchStart(t *testing.T) {
 		startError     error
 		expectedStatus int
 	}{
-		{
-			name:           "successful start",
-			method:         http.MethodPost,
-			isRunning:      false,
-			startError:     nil,
-			expectedStatus: http.StatusOK,
-		},
-		{
-			name:           "already running",
-			method:         http.MethodPost,
-			isRunning:      true,
-			startError:     nil,
-			expectedStatus: http.StatusConflict,
-		},
-		{
-			name:           "wrong method",
-			method:         http.MethodGet,
-			isRunning:      false,
-			startError:     nil,
-			expectedStatus: http.StatusMethodNotAllowed,
-		},
-		{
-			name:           "start error",
-			method:         http.MethodPost,
-			isRunning:      false,
-			startError:     errors.New("failed"),
-			expectedStatus: http.StatusInternalServerError,
-		},
+		{"successful start", http.MethodPost, false, nil, http.StatusOK},
+		{"already running", http.MethodPost, true, nil, http.StatusConflict},
+		{"wrong method", http.MethodGet, false, nil, http.StatusMethodNotAllowed},
+		{"start error", http.MethodPost, false, errors.New("failed"), http.StatusInternalServerError},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			idx := &mockIndexer{}
-			w := &mockWatcher{
-				running:    tt.isRunning,
-				startError: tt.startError,
-			}
-			h := New(idx, w)
+		s.Run(tt.name, func() {
+			w := &mockWatcher{running: tt.isRunning, startError: tt.startError}
+			h := New(&mockIndexer{}, w)
 
 			req := httptest.NewRequest(tt.method, "/watch/start", nil)
 			rec := httptest.NewRecorder()
-
 			h.WatchStart(rec, req)
 
-			if rec.Code != tt.expectedStatus {
-				t.Errorf("status = %v, want %v", rec.Code, tt.expectedStatus)
-			}
+			s.Equal(tt.expectedStatus, rec.Code)
 		})
 	}
 }
 
-func TestHandler_WatchStop(t *testing.T) {
+func (s *HandlersSuite) TestWatchStop() {
 	tests := []struct {
 		name           string
 		method         string
@@ -243,91 +169,49 @@ func TestHandler_WatchStop(t *testing.T) {
 		stopError      error
 		expectedStatus int
 	}{
-		{
-			name:           "successful stop",
-			method:         http.MethodPost,
-			isRunning:      true,
-			stopError:      nil,
-			expectedStatus: http.StatusOK,
-		},
-		{
-			name:           "not running",
-			method:         http.MethodPost,
-			isRunning:      false,
-			stopError:      nil,
-			expectedStatus: http.StatusConflict,
-		},
-		{
-			name:           "wrong method",
-			method:         http.MethodGet,
-			isRunning:      true,
-			stopError:      nil,
-			expectedStatus: http.StatusMethodNotAllowed,
-		},
+		{"successful stop", http.MethodPost, true, nil, http.StatusOK},
+		{"not running", http.MethodPost, false, nil, http.StatusConflict},
+		{"wrong method", http.MethodGet, true, nil, http.StatusMethodNotAllowed},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			idx := &mockIndexer{}
-			w := &mockWatcher{
-				running:   tt.isRunning,
-				stopError: tt.stopError,
-			}
-			h := New(idx, w)
+		s.Run(tt.name, func() {
+			w := &mockWatcher{running: tt.isRunning, stopError: tt.stopError}
+			h := New(&mockIndexer{}, w)
 
 			req := httptest.NewRequest(tt.method, "/watch/stop", nil)
 			rec := httptest.NewRecorder()
-
 			h.WatchStop(rec, req)
 
-			if rec.Code != tt.expectedStatus {
-				t.Errorf("status = %v, want %v", rec.Code, tt.expectedStatus)
-			}
+			s.Equal(tt.expectedStatus, rec.Code)
 		})
 	}
 }
 
-func TestHandler_WatchStatus(t *testing.T) {
+func (s *HandlersSuite) TestWatchStatus() {
 	tests := []struct {
 		name      string
 		isRunning bool
 		expected  string
 	}{
-		{
-			name:      "watcher running",
-			isRunning: true,
-			expected:  "running",
-		},
-		{
-			name:      "watcher stopped",
-			isRunning: false,
-			expected:  "stopped",
-		},
+		{"watcher running", true, "running"},
+		{"watcher stopped", false, "stopped"},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			idx := &mockIndexer{}
+		s.Run(tt.name, func() {
 			w := &mockWatcher{running: tt.isRunning}
-			h := New(idx, w)
+			h := New(&mockIndexer{}, w)
 
 			req := httptest.NewRequest(http.MethodGet, "/watch/status", nil)
 			rec := httptest.NewRecorder()
-
 			h.WatchStatus(rec, req)
 
-			if rec.Code != http.StatusOK {
-				t.Errorf("status = %v, want %v", rec.Code, http.StatusOK)
-			}
+			s.Equal(http.StatusOK, rec.Code)
 
 			var result map[string]string
-			if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
-				t.Fatalf("failed to decode response: %v", err)
-			}
-
-			if result["status"] != tt.expected {
-				t.Errorf("status = %v, want %v", result["status"], tt.expected)
-			}
+			s.Require().NoError(json.NewDecoder(rec.Body).Decode(&result))
+			s.Equal(tt.expected, result["status"])
 		})
 	}
 }

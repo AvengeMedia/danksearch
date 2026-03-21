@@ -3,36 +3,44 @@ package errdefs
 import (
 	"errors"
 	"testing"
+
+	"github.com/stretchr/testify/suite"
 )
 
-func TestCustomError_Error(t *testing.T) {
+type ErrdefsSuite struct {
+	suite.Suite
+}
+
+func TestErrdefsSuite(t *testing.T) {
+	suite.Run(t, new(ErrdefsSuite))
+}
+
+func (s *ErrdefsSuite) TestCustomError_Error() {
 	tests := []struct {
 		name     string
 		err      *CustomError
 		expected string
 	}{
 		{
-			name:     "error without wrapped error",
-			err:      &CustomError{Type: ErrTypeIndexNotFound, Message: "test message"},
-			expected: "test message",
+			"error without wrapped error",
+			&CustomError{Type: ErrTypeIndexNotFound, Message: "test message"},
+			"test message",
 		},
 		{
-			name:     "error with wrapped error",
-			err:      &CustomError{Type: ErrTypeIndexNotFound, Message: "test message", Err: errors.New("wrapped")},
-			expected: "test message: wrapped",
+			"error with wrapped error",
+			&CustomError{Type: ErrTypeIndexNotFound, Message: "test message", Err: errors.New("wrapped")},
+			"test message: wrapped",
 		},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.err.Error(); got != tt.expected {
-				t.Errorf("Error() = %v, want %v", got, tt.expected)
-			}
+		s.Run(tt.name, func() {
+			s.Equal(tt.expected, tt.err.Error())
 		})
 	}
 }
 
-func TestCustomError_Unwrap(t *testing.T) {
+func (s *ErrdefsSuite) TestCustomError_Unwrap() {
 	wrappedErr := errors.New("wrapped error")
 	err := &CustomError{
 		Type:    ErrTypeIndexNotFound,
@@ -40,34 +48,21 @@ func TestCustomError_Unwrap(t *testing.T) {
 		Err:     wrappedErr,
 	}
 
-	if unwrapped := err.Unwrap(); unwrapped != wrappedErr {
-		t.Errorf("Unwrap() = %v, want %v", unwrapped, wrappedErr)
-	}
+	s.Equal(wrappedErr, err.Unwrap())
 }
 
-func TestNewCustomError(t *testing.T) {
+func (s *ErrdefsSuite) TestNewCustomError() {
 	wrappedErr := errors.New("wrapped")
 	err := NewCustomError(ErrTypeIndexNotFound, "test message", wrappedErr)
 
 	customErr, ok := err.(*CustomError)
-	if !ok {
-		t.Fatal("expected *CustomError")
-	}
-
-	if customErr.Type != ErrTypeIndexNotFound {
-		t.Errorf("Type = %v, want %v", customErr.Type, ErrTypeIndexNotFound)
-	}
-
-	if customErr.Message != "test message" {
-		t.Errorf("Message = %v, want %v", customErr.Message, "test message")
-	}
-
-	if customErr.Err != wrappedErr {
-		t.Errorf("Err = %v, want %v", customErr.Err, wrappedErr)
-	}
+	s.Require().True(ok)
+	s.Equal(ErrTypeIndexNotFound, customErr.Type)
+	s.Equal("test message", customErr.Message)
+	s.Equal(wrappedErr, customErr.Err)
 }
 
-func TestPredefinedErrors(t *testing.T) {
+func (s *ErrdefsSuite) TestPredefinedErrors() {
 	tests := []struct {
 		name    string
 		err     error
@@ -84,19 +79,11 @@ func TestPredefinedErrors(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		s.Run(tt.name, func() {
 			customErr, ok := tt.err.(*CustomError)
-			if !ok {
-				t.Fatal("expected *CustomError")
-			}
-
-			if customErr.Type != tt.errType {
-				t.Errorf("Type = %v, want %v", customErr.Type, tt.errType)
-			}
-
-			if customErr.Message != tt.message {
-				t.Errorf("Message = %v, want %v", customErr.Message, tt.message)
-			}
+			s.Require().True(ok)
+			s.Equal(tt.errType, customErr.Type)
+			s.Equal(tt.message, customErr.Message)
 		})
 	}
 }

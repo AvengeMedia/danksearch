@@ -10,6 +10,7 @@ import (
 	"github.com/AvengeMedia/danksearch/internal/config"
 	"github.com/AvengeMedia/danksearch/internal/indexer"
 	bleve "github.com/blevesearch/bleve/v2"
+	"github.com/stretchr/testify/suite"
 )
 
 type mockHTTPIndexer struct{}
@@ -56,30 +57,23 @@ func (m *mockHTTPWatcher) IsRunning() bool {
 	return m.running
 }
 
-func TestNewHTTP(t *testing.T) {
-	idx := &mockHTTPIndexer{}
-	w := &mockHTTPWatcher{}
-
-	srv := NewHTTP(":8080", idx, w)
-
-	if srv == nil {
-		t.Fatal("NewHTTP() returned nil")
-	}
-
-	if srv.server == nil {
-		t.Error("server should not be nil")
-	}
-
-	if srv.server.Addr != ":8080" {
-		t.Errorf("Addr = %v, want :8080", srv.server.Addr)
-	}
+type HTTPSuite struct {
+	suite.Suite
 }
 
-func TestHTTPServer_Routes(t *testing.T) {
-	idx := &mockHTTPIndexer{}
-	w := &mockHTTPWatcher{}
+func TestHTTPSuite(t *testing.T) {
+	suite.Run(t, new(HTTPSuite))
+}
 
-	srv := NewHTTP(":8080", idx, w)
+func (s *HTTPSuite) TestNewHTTP() {
+	srv := NewHTTP(":8080", &mockHTTPIndexer{}, &mockHTTPWatcher{})
+	s.Require().NotNil(srv)
+	s.NotNil(srv.server)
+	s.Equal(":8080", srv.server.Addr)
+}
+
+func (s *HTTPSuite) TestRoutes() {
+	srv := NewHTTP(":8080", &mockHTTPIndexer{}, &mockHTTPWatcher{})
 
 	tests := []struct {
 		name   string
@@ -87,62 +81,32 @@ func TestHTTPServer_Routes(t *testing.T) {
 		method string
 		status int
 	}{
-		{
-			name:   "health endpoint",
-			path:   "/health",
-			method: http.MethodGet,
-			status: http.StatusOK,
-		},
-		{
-			name:   "search endpoint",
-			path:   "/search?q=test",
-			method: http.MethodGet,
-			status: http.StatusOK,
-		},
-		{
-			name:   "stats endpoint",
-			path:   "/stats",
-			method: http.MethodGet,
-			status: http.StatusOK,
-		},
-		{
-			name:   "watch status endpoint",
-			path:   "/watch/status",
-			method: http.MethodGet,
-			status: http.StatusOK,
-		},
+		{"health endpoint", "/health", http.MethodGet, http.StatusOK},
+		{"search endpoint", "/search?q=test", http.MethodGet, http.StatusOK},
+		{"stats endpoint", "/stats", http.MethodGet, http.StatusOK},
+		{"watch status endpoint", "/watch/status", http.MethodGet, http.StatusOK},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		s.Run(tt.name, func() {
 			req := httptest.NewRequest(tt.method, tt.path, nil)
 			rec := httptest.NewRecorder()
-
 			srv.server.Handler.ServeHTTP(rec, req)
-
-			if rec.Code != tt.status {
-				t.Errorf("status = %v, want %v", rec.Code, tt.status)
-			}
+			s.Equal(tt.status, rec.Code)
 		})
 	}
 }
 
-func TestHTTPServer_Shutdown(t *testing.T) {
-	idx := &mockHTTPIndexer{}
-	w := &mockHTTPWatcher{}
-
-	srv := NewHTTP(":0", idx, w)
+func (s *HTTPSuite) TestShutdown() {
+	srv := NewHTTP(":0", &mockHTTPIndexer{}, &mockHTTPWatcher{})
 
 	go func() {
 		srv.Start()
 	}()
-
 	time.Sleep(100 * time.Millisecond)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := srv.Shutdown(ctx); err != nil {
-		t.Errorf("Shutdown() error = %v", err)
-	}
+	s.NoError(srv.Shutdown(ctx))
 }

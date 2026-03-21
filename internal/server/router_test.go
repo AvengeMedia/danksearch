@@ -10,6 +10,7 @@ import (
 	"github.com/AvengeMedia/danksearch/internal/indexer"
 	"github.com/AvengeMedia/danksearch/internal/server/models"
 	bleve "github.com/blevesearch/bleve/v2"
+	"github.com/stretchr/testify/suite"
 )
 
 type mockRouterIndexer struct{}
@@ -74,253 +75,121 @@ func (m *mockConn) Close() error {
 	return nil
 }
 
-func TestRouter_Ping(t *testing.T) {
-	idx := &mockRouterIndexer{}
-	w := &mockRouterWatcher{}
-	router := NewRouter(idx, w)
+type RouterSuite struct {
+	suite.Suite
+}
 
+func TestRouterSuite(t *testing.T) {
+	suite.Run(t, new(RouterSuite))
+}
+
+func (s *RouterSuite) TestPing() {
+	router := NewRouter(&mockRouterIndexer{}, &mockRouterWatcher{})
 	conn := &mockConn{}
-	req := models.Request{
-		ID:     1,
-		Method: "ping",
-	}
-
-	router.RouteRequest(conn, req)
+	router.RouteRequest(conn, models.Request{ID: 1, Method: "ping"})
 
 	var resp models.Response[string]
-	if err := json.Unmarshal(conn.written, &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
-
-	if resp.ID != 1 {
-		t.Errorf("ID = %v, want 1", resp.ID)
-	}
-
-	if resp.Result == nil || *resp.Result != "pong" {
-		t.Errorf("Result = %v, want pong", resp.Result)
-	}
+	s.Require().NoError(json.Unmarshal(conn.written, &resp))
+	s.Equal(1, resp.ID)
+	s.Require().NotNil(resp.Result)
+	s.Equal("pong", *resp.Result)
 }
 
-func TestRouter_Search(t *testing.T) {
-	idx := &mockRouterIndexer{}
-	w := &mockRouterWatcher{}
-	router := NewRouter(idx, w)
-
+func (s *RouterSuite) TestSearch() {
+	router := NewRouter(&mockRouterIndexer{}, &mockRouterWatcher{})
 	conn := &mockConn{}
-	req := models.Request{
+	router.RouteRequest(conn, models.Request{
 		ID:     2,
 		Method: "search",
-		Params: map[string]any{
-			"query": "test",
-			"limit": float64(10),
-		},
-	}
-
-	router.RouteRequest(conn, req)
+		Params: map[string]any{"query": "test", "limit": float64(10)},
+	})
 
 	var resp models.Response[bleve.SearchResult]
-	if err := json.Unmarshal(conn.written, &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
-
-	if resp.ID != 2 {
-		t.Errorf("ID = %v, want 2", resp.ID)
-	}
-
-	if resp.Result == nil {
-		t.Fatal("Result should not be nil")
-	}
-
-	if resp.Result.Total != 5 {
-		t.Errorf("Total = %v, want 5", resp.Result.Total)
-	}
+	s.Require().NoError(json.Unmarshal(conn.written, &resp))
+	s.Equal(2, resp.ID)
+	s.Require().NotNil(resp.Result)
+	s.Equal(uint64(5), resp.Result.Total)
 }
 
-func TestRouter_Stats(t *testing.T) {
-	idx := &mockRouterIndexer{}
-	w := &mockRouterWatcher{}
-	router := NewRouter(idx, w)
-
+func (s *RouterSuite) TestStats() {
+	router := NewRouter(&mockRouterIndexer{}, &mockRouterWatcher{})
 	conn := &mockConn{}
-	req := models.Request{
-		ID:     3,
-		Method: "stats",
-	}
-
-	router.RouteRequest(conn, req)
+	router.RouteRequest(conn, models.Request{ID: 3, Method: "stats"})
 
 	var resp models.Response[config.IndexStats]
-	if err := json.Unmarshal(conn.written, &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
-
-	if resp.Result == nil {
-		t.Fatal("Result should not be nil")
-	}
-
-	if resp.Result.TotalFiles != 100 {
-		t.Errorf("TotalFiles = %v, want 100", resp.Result.TotalFiles)
-	}
+	s.Require().NoError(json.Unmarshal(conn.written, &resp))
+	s.Require().NotNil(resp.Result)
+	s.EqualValues(100, resp.Result.TotalFiles)
 }
 
-func TestRouter_WatchStart(t *testing.T) {
-	idx := &mockRouterIndexer{}
+func (s *RouterSuite) TestWatchStart() {
 	w := &mockRouterWatcher{}
-	router := NewRouter(idx, w)
-
+	router := NewRouter(&mockRouterIndexer{}, w)
 	conn := &mockConn{}
-	req := models.Request{
-		ID:     4,
-		Method: "watch.start",
-	}
-
-	router.RouteRequest(conn, req)
+	router.RouteRequest(conn, models.Request{ID: 4, Method: "watch.start"})
 
 	var resp models.Response[map[string]string]
-	if err := json.Unmarshal(conn.written, &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
-
-	if resp.Result == nil {
-		t.Fatal("Result should not be nil")
-	}
-
-	if (*resp.Result)["status"] != "watcher started" {
-		t.Errorf("status = %v, want 'watcher started'", (*resp.Result)["status"])
-	}
-
-	if !w.running {
-		t.Error("watcher should be running")
-	}
+	s.Require().NoError(json.Unmarshal(conn.written, &resp))
+	s.Require().NotNil(resp.Result)
+	s.Equal("watcher started", (*resp.Result)["status"])
+	s.True(w.running)
 }
 
-func TestRouter_WatchStop(t *testing.T) {
-	idx := &mockRouterIndexer{}
+func (s *RouterSuite) TestWatchStop() {
 	w := &mockRouterWatcher{running: true}
-	router := NewRouter(idx, w)
-
+	router := NewRouter(&mockRouterIndexer{}, w)
 	conn := &mockConn{}
-	req := models.Request{
-		ID:     5,
-		Method: "watch.stop",
-	}
-
-	router.RouteRequest(conn, req)
+	router.RouteRequest(conn, models.Request{ID: 5, Method: "watch.stop"})
 
 	var resp models.Response[map[string]string]
-	if err := json.Unmarshal(conn.written, &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
-
-	if resp.Result == nil {
-		t.Fatal("Result should not be nil")
-	}
-
-	if (*resp.Result)["status"] != "watcher stopped" {
-		t.Errorf("status = %v, want 'watcher stopped'", (*resp.Result)["status"])
-	}
-
-	if w.running {
-		t.Error("watcher should not be running")
-	}
+	s.Require().NoError(json.Unmarshal(conn.written, &resp))
+	s.Require().NotNil(resp.Result)
+	s.Equal("watcher stopped", (*resp.Result)["status"])
+	s.False(w.running)
 }
 
-func TestRouter_WatchStatus(t *testing.T) {
+func (s *RouterSuite) TestWatchStatus() {
 	tests := []struct {
 		name     string
 		running  bool
 		expected string
 	}{
-		{
-			name:     "running",
-			running:  true,
-			expected: "running",
-		},
-		{
-			name:     "stopped",
-			running:  false,
-			expected: "stopped",
-		},
+		{"running", true, "running"},
+		{"stopped", false, "stopped"},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			idx := &mockRouterIndexer{}
-			w := &mockRouterWatcher{running: tt.running}
-			router := NewRouter(idx, w)
-
+		s.Run(tt.name, func() {
+			router := NewRouter(&mockRouterIndexer{}, &mockRouterWatcher{running: tt.running})
 			conn := &mockConn{}
-			req := models.Request{
-				ID:     6,
-				Method: "watch.status",
-			}
-
-			router.RouteRequest(conn, req)
+			router.RouteRequest(conn, models.Request{ID: 6, Method: "watch.status"})
 
 			var resp models.Response[map[string]string]
-			if err := json.Unmarshal(conn.written, &resp); err != nil {
-				t.Fatalf("failed to unmarshal response: %v", err)
-			}
-
-			if resp.Result == nil {
-				t.Fatal("Result should not be nil")
-			}
-
-			if (*resp.Result)["status"] != tt.expected {
-				t.Errorf("status = %v, want %v", (*resp.Result)["status"], tt.expected)
-			}
+			s.Require().NoError(json.Unmarshal(conn.written, &resp))
+			s.Require().NotNil(resp.Result)
+			s.Equal(tt.expected, (*resp.Result)["status"])
 		})
 	}
 }
 
-func TestRouter_Reindex(t *testing.T) {
-	idx := &mockRouterIndexer{}
-	w := &mockRouterWatcher{}
-	router := NewRouter(idx, w)
-
+func (s *RouterSuite) TestReindex() {
+	router := NewRouter(&mockRouterIndexer{}, &mockRouterWatcher{})
 	conn := &mockConn{}
-	req := models.Request{
-		ID:     7,
-		Method: "reindex",
-	}
-
-	router.RouteRequest(conn, req)
-
+	router.RouteRequest(conn, models.Request{ID: 7, Method: "reindex"})
 	time.Sleep(50 * time.Millisecond)
 
 	var resp models.Response[map[string]string]
-	if err := json.Unmarshal(conn.written, &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
-
-	if resp.Result == nil {
-		t.Fatal("Result should not be nil")
-	}
-
-	if (*resp.Result)["status"] != "reindexing started" {
-		t.Errorf("status = %v, want 'reindexing started'", (*resp.Result)["status"])
-	}
+	s.Require().NoError(json.Unmarshal(conn.written, &resp))
+	s.Require().NotNil(resp.Result)
+	s.Equal("reindexing started", (*resp.Result)["status"])
 }
 
-func TestRouter_UnknownMethod(t *testing.T) {
-	idx := &mockRouterIndexer{}
-	w := &mockRouterWatcher{}
-	router := NewRouter(idx, w)
-
+func (s *RouterSuite) TestUnknownMethod() {
+	router := NewRouter(&mockRouterIndexer{}, &mockRouterWatcher{})
 	conn := &mockConn{}
-	req := models.Request{
-		ID:     8,
-		Method: "unknown",
-	}
-
-	router.RouteRequest(conn, req)
+	router.RouteRequest(conn, models.Request{ID: 8, Method: "unknown"})
 
 	var resp models.Response[any]
-	if err := json.Unmarshal(conn.written, &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
-
-	if resp.Error == "" {
-		t.Error("Error should not be empty")
-	}
+	s.Require().NoError(json.Unmarshal(conn.written, &resp))
+	s.NotEmpty(resp.Error)
 }
