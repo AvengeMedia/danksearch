@@ -124,7 +124,7 @@ func Default() *Config {
 
 	cfg := &Config{
 		IndexPath:      getDefaultIndexPath(),
-		ListenAddr:     ":43654",
+		ListenAddr:     "127.0.0.1:43654",
 		MaxFileBytes:   2 * 1024 * 1024,
 		WorkerCount:    workerCount,
 		IndexAllFiles:  true,
