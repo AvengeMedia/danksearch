@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -167,4 +168,54 @@ func (s *ConfigSuite) TestGetDefaultIndexPath() {
 
 	s.NotEmpty(path)
 	s.True(filepath.IsAbs(path))
+}
+
+func (s *ConfigSuite) TestExpandPath() {
+	home, err := os.UserHomeDir()
+	s.Require().NoError(err)
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"tilde only", "~", home},
+		{"tilde with subdir", "~/Documents", filepath.Join(home, "Documents")},
+		{"tilde with nested", "~/foo/bar", filepath.Join(home, "foo", "bar")},
+		{"absolute unchanged", "/home/user/files", "/home/user/files"},
+		{"empty unchanged", "", ""},
+	}
+
+	for _, tt := range tests {
+		s.Run(tt.name, func() {
+			s.Equal(tt.expected, expandPath(tt.input))
+		})
+	}
+}
+
+func (s *ConfigSuite) TestExpandPathEnvVar() {
+	s.T().Setenv("DSEARCH_TEST_DIR", "/tmp/testdir")
+
+	s.Equal("/tmp/testdir/files", expandPath("$DSEARCH_TEST_DIR/files"))
+	s.Equal("/tmp/testdir", expandPath("$DSEARCH_TEST_DIR"))
+}
+
+func (s *ConfigSuite) TestExpandPathsInConfig() {
+	home, err := os.UserHomeDir()
+	s.Require().NoError(err)
+
+	cfg := &Config{
+		IndexPath: "~/index",
+		IndexPaths: []IndexPath{
+			{Path: "~/Documents"},
+			{Path: "~/Pictures"},
+			{Path: "/absolute/path"},
+		},
+	}
+	cfg.expandPaths()
+
+	s.Equal(filepath.Join(home, "index"), cfg.IndexPath)
+	s.Equal(filepath.Join(home, "Documents"), cfg.IndexPaths[0].Path)
+	s.Equal(filepath.Join(home, "Pictures"), cfg.IndexPaths[1].Path)
+	s.Equal("/absolute/path", cfg.IndexPaths[2].Path)
 }

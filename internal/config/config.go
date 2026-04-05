@@ -177,6 +177,7 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
+	cfg.expandPaths()
 	cfg.BuildMaps()
 	return cfg, nil
 }
@@ -197,6 +198,33 @@ func (c *Config) Save(path string) error {
 	f.WriteString("# See https://github.com/AvengeMedia/danksearch for documentation\n\n")
 
 	return toml.NewEncoder(f).Encode(c)
+}
+
+func expandPath(path string) string {
+	switch {
+	case path == "~":
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return path
+		}
+		return home
+	case strings.HasPrefix(path, "~/"):
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return path
+		}
+		return filepath.Join(home, path[2:])
+	default:
+		return os.ExpandEnv(path)
+	}
+}
+
+func (c *Config) expandPaths() {
+	c.IndexPath = expandPath(c.IndexPath)
+	c.RootDir = expandPath(c.RootDir)
+	for i := range c.IndexPaths {
+		c.IndexPaths[i].Path = expandPath(c.IndexPaths[i].Path)
+	}
 }
 
 func (c *Config) BuildMaps() {

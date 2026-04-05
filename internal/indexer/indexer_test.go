@@ -98,6 +98,37 @@ func (s *IndexerSuite) TestStats() {
 	s.NotNil(idx.Stats())
 }
 
+func (s *IndexerSuite) TestRemoveIndexDir() {
+	idx, err := New(s.cfg)
+	s.Require().NoError(err)
+	idx.Close()
+
+	s.NoError(removeIndexDir(s.cfg.IndexPath))
+	_, statErr := os.Stat(s.cfg.IndexPath)
+	s.True(os.IsNotExist(statErr))
+}
+
+func (s *IndexerSuite) TestRemoveIndexDirRefusesNonIndex() {
+	plainDir := filepath.Join(s.tmpDir, "not-an-index")
+	s.Require().NoError(os.MkdirAll(plainDir, 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(plainDir, "important.txt"), []byte("data"), 0644))
+
+	err := removeIndexDir(plainDir)
+	s.Error(err)
+	s.Contains(err.Error(), "not a bleve index directory")
+
+	_, statErr := os.Stat(filepath.Join(plainDir, "important.txt"))
+	s.NoError(statErr)
+}
+
+func (s *IndexerSuite) TestRemoveIndexDirNonExistent() {
+	s.NoError(removeIndexDir(filepath.Join(s.tmpDir, "does-not-exist")))
+}
+
+func (s *IndexerSuite) TestRemoveIndexDirEmpty() {
+	s.Error(removeIndexDir(""))
+}
+
 func (s *IndexerSuite) TestReadDocument() {
 	idx := s.newIndexer()
 	content := "package main\n\nfunc main() {}\n"

@@ -133,7 +133,8 @@ func New(cfg *config.Config) (*Indexer, error) {
 
 func openOrCreateIndex(path string) (bleve.Index, error) {
 	idx, err := bleve.Open(path)
-	if err == bleve.ErrorIndexPathDoesNotExist {
+	switch {
+	case err == bleve.ErrorIndexPathDoesNotExist:
 		mapping := buildIndexMapping()
 		idx, err = bleve.NewUsing(path, mapping, "scorch", "scorch", getIndexConfig())
 		if err != nil {
@@ -141,26 +142,8 @@ func openOrCreateIndex(path string) (bleve.Index, error) {
 		}
 		log.Infof("created new index at %s", path)
 		return idx, nil
-	}
-	if err != nil {
-		// Index exists but failed to open - likely corrupted
-		log.Warnf("failed to open existing index at %s: %v", path, err)
-		log.Warnf("index may be corrupted, attempting to recover by recreating...")
-
-		// Remove the corrupted index
-		if removeErr := os.RemoveAll(path); removeErr != nil {
-			return nil, fmt.Errorf("failed to remove corrupted index: %w", removeErr)
-		}
-		log.Infof("removed corrupted index at %s", path)
-
-		// Create a fresh index
-		mapping := buildIndexMapping()
-		idx, err = bleve.NewUsing(path, mapping, "scorch", "scorch", getIndexConfig())
-		if err != nil {
-			return nil, fmt.Errorf("failed to create new index after corruption: %w", err)
-		}
-		log.Infof("created new index at %s after corruption recovery", path)
-		return idx, nil
+	case err != nil:
+		return nil, fmt.Errorf("failed to open index at %s (try 'dsearch index generate' to rebuild): %w", path, err)
 	}
 	log.Infof("opened existing index at %s", path)
 	return idx, nil
@@ -933,6 +916,10 @@ func (i *Indexer) buildFieldQuery(queryStr, field string, fuzzy bool) query.Quer
 func (i *Indexer) ReindexAll() error {
 	start := time.Now()
 
+	if err := i.meta.Clear(); err != nil {
+		return errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, "failed to clear metastore", err)
+	}
+
 	i.mu.Lock()
 	indexPath := i.config.IndexPath
 	if err := i.index.Close(); err != nil {
@@ -941,7 +928,7 @@ func (i *Indexer) ReindexAll() error {
 	}
 	i.mu.Unlock()
 
-	if err := os.RemoveAll(indexPath); err != nil {
+	if err := removeIndexDir(indexPath); err != nil {
 		return errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, "failed to remove index", err)
 	}
 
@@ -954,10 +941,6 @@ func (i *Indexer) ReindexAll() error {
 	i.index = newIndex
 	i.indexComplete.Store(false)
 	i.mu.Unlock()
-
-	if err := i.meta.Clear(); err != nil {
-		return errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, "failed to clear metastore", err)
-	}
 
 	var totalFiles int64
 	var totalBytes int64
@@ -1314,6 +1297,25 @@ func (i *Indexer) Close() error {
 	defer i.mu.Unlock()
 	i.meta.Close()
 	return i.index.Close()
+}
+
+func removeIndexDir(path string) error {
+	if path == "" {
+		return fmt.Errorf("index path is empty")
+	}
+
+	_, err := os.Stat(filepath.Join(path, "index_meta.json"))
+	switch {
+	case os.IsNotExist(err):
+		if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+			return nil
+		}
+		return fmt.Errorf("refusing to remove %s: not a bleve index directory", path)
+	case err != nil:
+		return fmt.Errorf("failed to check index directory %s: %w", path, err)
+	}
+
+	return os.RemoveAll(path)
 }
 
 func walkFollowSymlinks(root string, fn filepath.WalkFunc) error {
