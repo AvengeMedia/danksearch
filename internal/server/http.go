@@ -101,9 +101,9 @@ func NewHTTP(addr string, indexer api.IndexerInterface, watcher api.WatcherInter
 
 func (s *HTTPServer) Start() error {
 	log.Infof("HTTP server listening on %s", s.server.Addr)
-	log.Infof("API Documentation: http://localhost%s/docs", s.server.Addr)
-	log.Infof("OpenAPI Spec: http://localhost%s/openapi.json", s.server.Addr)
-	log.Infof("Health Check: http://localhost%s/health", s.server.Addr)
+	log.Infof("API Documentation: http://%s/docs", s.server.Addr)
+	log.Infof("OpenAPI Spec: http://%s/openapi.json", s.server.Addr)
+	log.Infof("Health Check: http://%s/health", s.server.Addr)
 
 	if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
