@@ -25,7 +25,7 @@
         pkgs: system:
         let
           inherit (pkgs) lib;
-          dsearchVersion = "0.3.0";
+          dsearchVersion = "0.3.1";
         in
         {
           dsearch = pkgs.buildGoModule {
