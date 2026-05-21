@@ -594,11 +594,7 @@ func (i *Indexer) SearchWithOptions(opts *SearchOptions) (*bleve.SearchResult, e
 	}
 
 	if opts.Folder != "" {
-		folderPrefix := strings.TrimRight(opts.Folder, "/") + "/"
-		folderPrefix = strings.ToLower(folderPrefix)
-		folderQuery := bleve.NewPrefixQuery(folderPrefix)
-		folderQuery.SetField("path")
-		filters = append(filters, folderQuery)
+		filters = append(filters, buildFolderFilter(opts.Folder))
 	}
 
 	switch opts.Type {
@@ -911,6 +907,30 @@ func (i *Indexer) buildFieldQuery(queryStr, field string, fuzzy bool) query.Quer
 	q := bleve.NewMatchQuery(queryStr)
 	q.SetField(field)
 	return q
+}
+
+// buildFolderFilter accepts either an absolute path (prefix-matched) or a
+// bare folder name (matched as a path component anywhere in the indexed path).
+// `~` is expanded to the user's home directory.
+func buildFolderFilter(folder string) query.Query {
+	folder = strings.ToLower(folder)
+
+	if strings.HasPrefix(folder, "~") {
+		if home, err := os.UserHomeDir(); err == nil {
+			folder = strings.ToLower(home) + folder[1:]
+		}
+	}
+
+	switch {
+	case strings.HasPrefix(folder, "/"):
+		q := bleve.NewPrefixQuery(strings.TrimRight(folder, "/") + "/")
+		q.SetField("path")
+		return q
+	default:
+		q := bleve.NewWildcardQuery("*/" + strings.Trim(folder, "/") + "/*")
+		q.SetField("path")
+		return q
+	}
 }
 
 func (i *Indexer) ReindexAll() error {

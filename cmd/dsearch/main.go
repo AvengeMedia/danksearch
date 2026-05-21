@@ -201,7 +201,7 @@ func init() {
 	searchCmd.Flags().Int64Var(&searchMinSize, "min-size", 0, "minimum file size in bytes")
 	searchCmd.Flags().Int64Var(&searchMaxSize, "max-size", 0, "maximum file size in bytes")
 	searchCmd.Flags().BoolVar(&searchJSON, "json", false, "output results in JSON format")
-	searchCmd.Flags().StringVar(&searchFolder, "folder", "", "filter by folder path (e.g., /home/user/Pictures)")
+	searchCmd.Flags().StringVar(&searchFolder, "folder", "", "filter by folder name (e.g., Pictures) or absolute path (e.g., /home/user/Pictures, ~/Pictures)")
 	searchCmd.Flags().StringVar(&searchExifMake, "exif-make", "", "filter by camera make (e.g., Canon)")
 	searchCmd.Flags().StringVar(&searchExifModel, "exif-model", "", "filter by camera model (e.g., Canon EOS 5D)")
 	searchCmd.Flags().StringVar(&searchExifDateAfter, "exif-date-after", "", "photos taken after date (RFC3339 or EXIF format)")
