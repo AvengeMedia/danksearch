@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/suite"
@@ -142,6 +143,70 @@ func (s *ConfigSuite) TestInvalidRegexSkipped() {
 
 	s.False(cfg.ShouldIndexFile("/home/user/project/valid-dir/file.go"))
 	s.True(cfg.ShouldIndexFile("/home/user/project/src/file.go"))
+}
+
+func (s *ConfigSuite) TestMergeDefaultExcludeDirs() {
+	cfg := &Config{
+		IndexAllFiles: true,
+		IndexPaths: []IndexPath{
+			{
+				Path:                    "/home/user",
+				MaxDepth:                10,
+				ExcludeDirs:             []string{"my_secrets"},
+				MergeDefaultExcludeDirs: true,
+			},
+		},
+	}
+	cfg.BuildMaps()
+
+	s.False(cfg.ShouldIndexFile("/home/user/repo/.git/HEAD"), "default .git should be excluded when merging")
+	s.False(cfg.ShouldIndexFile("/home/user/repo/node_modules/pkg.json"), "default node_modules should be excluded when merging")
+	s.False(cfg.ShouldIndexFile("/home/user/repo/my_secrets/key.pem"), "user-supplied dir should still apply")
+	s.True(cfg.ShouldIndexFile("/home/user/repo/src/main.go"))
+}
+
+func (s *ConfigSuite) TestMergeDefaultExcludeDirsOptIn() {
+	cfg := &Config{
+		IndexAllFiles: true,
+		IndexPaths: []IndexPath{
+			{
+				Path:        "/home/user",
+				MaxDepth:    10,
+				ExcludeDirs: []string{"my_secrets"},
+			},
+		},
+	}
+	cfg.BuildMaps()
+
+	s.True(cfg.ShouldIndexFile("/home/user/repo/node_modules/pkg.json"), "defaults must not apply unless merge flag is set")
+	s.False(cfg.ShouldIndexFile("/home/user/repo/my_secrets/key.pem"))
+}
+
+func (s *ConfigSuite) TestMergeDefaultExcludeDirsDedup() {
+	cfg := &Config{
+		IndexAllFiles: true,
+		IndexPaths: []IndexPath{
+			{
+				Path:                    "/home/user",
+				MaxDepth:                10,
+				ExcludeDirs:             []string{"node_modules", ".git"},
+				MergeDefaultExcludeDirs: true,
+			},
+		},
+	}
+	cfg.BuildMaps()
+
+	resolved := cfg.IndexPaths[0].resolvedExcludeDirs()
+	counts := map[string]int{}
+	for _, d := range resolved {
+		counts[d]++
+	}
+	s.Equal(1, counts["node_modules"], "duplicate entries must be collapsed")
+	s.Equal(1, counts[".git"])
+}
+
+func (s *ConfigSuite) TestDefaultExcludeDirsContainsGit() {
+	s.True(slices.Contains(DefaultExcludeDirs(), ".git"), ".git should be in the built-in exclude defaults")
 }
 
 func (s *ConfigSuite) TestBackwardsCompat() {

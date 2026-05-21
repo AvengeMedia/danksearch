@@ -13,13 +13,14 @@ import (
 )
 
 type IndexPath struct {
-	Path             string   `toml:"path"`
-	MaxDepth         int      `toml:"max_depth"`
-	ExcludeHidden    bool     `toml:"exclude_hidden"`
-	ExcludeDirs      []string `toml:"exclude_dirs"`
-	ExtractExif      bool     `toml:"extract_exif"`
-	ExtractXattrTags bool     `toml:"extract_xattr_tags"`
-	Watch            *bool    `toml:"watch,omitempty"` // nil = true (default), false = skip fsnotify
+	Path                    string   `toml:"path"`
+	MaxDepth                int      `toml:"max_depth"`
+	ExcludeHidden           bool     `toml:"exclude_hidden"`
+	ExcludeDirs             []string `toml:"exclude_dirs"`
+	MergeDefaultExcludeDirs bool     `toml:"merge_default_exclude_dirs,omitempty"`
+	ExtractExif             bool     `toml:"extract_exif"`
+	ExtractXattrTags        bool     `toml:"extract_xattr_tags"`
+	Watch                   *bool    `toml:"watch,omitempty"` // nil = true (default), false = skip fsnotify
 
 	excludeDirsMap   map[string]bool
 	excludeDirsRegex []*regexp.Regexp
@@ -43,10 +44,16 @@ type Config struct {
 	textExtsMap map[string]bool
 }
 
-func Default() *Config {
-	home, _ := os.UserHomeDir()
+// DefaultExcludeDirs returns the built-in list of directories that are
+// almost never useful to index. Returns a fresh copy each call so callers
+// may mutate the slice without affecting other callers.
+func DefaultExcludeDirs() []string {
+	return []string{
+		// VCS
+		".git",
+		".hg",
+		".svn",
 
-	defaultExcludeDirs := []string{
 		// JavaScript/Node.js
 		"node_modules",
 		"bower_components",
@@ -116,6 +123,10 @@ func Default() *Config {
 		".idea",
 		".vscode",
 	}
+}
+
+func Default() *Config {
+	home, _ := os.UserHomeDir()
 
 	workerCount := runtime.NumCPU() / 2
 	if workerCount < 1 {
@@ -134,7 +145,7 @@ func Default() *Config {
 				Path:          home,
 				MaxDepth:      6,
 				ExcludeHidden: true,
-				ExcludeDirs:   defaultExcludeDirs,
+				ExcludeDirs:   DefaultExcludeDirs(),
 				ExtractExif:   true,
 			},
 		},
@@ -229,10 +240,12 @@ func (c *Config) expandPaths() {
 
 func (c *Config) BuildMaps() {
 	for i := range c.IndexPaths {
-		c.IndexPaths[i].excludeDirsMap = make(map[string]bool, len(c.IndexPaths[i].ExcludeDirs))
+		dirs := c.IndexPaths[i].resolvedExcludeDirs()
+		c.IndexPaths[i].excludeDirsMap = make(map[string]bool, len(dirs))
 		c.IndexPaths[i].excludeDirsRegex = nil
-		for _, dir := range c.IndexPaths[i].ExcludeDirs {
-			if len(dir) >= 3 && dir[0] == '/' && dir[len(dir)-1] == '/' {
+		for _, dir := range dirs {
+			switch {
+			case len(dir) >= 3 && dir[0] == '/' && dir[len(dir)-1] == '/':
 				pattern := dir[1 : len(dir)-1]
 				re, err := regexp.Compile(pattern)
 				if err != nil {
@@ -240,7 +253,7 @@ func (c *Config) BuildMaps() {
 					continue
 				}
 				c.IndexPaths[i].excludeDirsRegex = append(c.IndexPaths[i].excludeDirsRegex, re)
-			} else {
+			default:
 				c.IndexPaths[i].excludeDirsMap[dir] = true
 			}
 		}
@@ -250,6 +263,35 @@ func (c *Config) BuildMaps() {
 	for _, ext := range c.TextExts {
 		c.textExtsMap[ext] = true
 	}
+}
+
+// resolvedExcludeDirs returns the deduplicated exclude_dirs list for this
+// IndexPath, optionally merged with DefaultExcludeDirs() when
+// merge_default_exclude_dirs is set. Order is preserved (defaults first when
+// merging) so the original config remains diffable.
+func (ip *IndexPath) resolvedExcludeDirs() []string {
+	if !ip.MergeDefaultExcludeDirs {
+		return ip.ExcludeDirs
+	}
+
+	defaults := DefaultExcludeDirs()
+	merged := make([]string, 0, len(defaults)+len(ip.ExcludeDirs))
+	seen := make(map[string]struct{}, len(defaults)+len(ip.ExcludeDirs))
+	for _, dir := range defaults {
+		if _, dup := seen[dir]; dup {
+			continue
+		}
+		seen[dir] = struct{}{}
+		merged = append(merged, dir)
+	}
+	for _, dir := range ip.ExcludeDirs {
+		if _, dup := seen[dir]; dup {
+			continue
+		}
+		seen[dir] = struct{}{}
+		merged = append(merged, dir)
+	}
+	return merged
 }
 
 func getDefaultIndexPath() string {

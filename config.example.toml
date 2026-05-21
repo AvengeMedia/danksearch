@@ -53,3 +53,15 @@ max_depth = 0  # Unlimited depth for Documents
 exclude_hidden = false  # Include hidden files in Documents
 extract_exif = true  # Extract EXIF metadata from images
 exclude_dirs = []
+
+# Example: index a dotfiles repository.
+# `merge_default_exclude_dirs = true` keeps the built-in noise list
+# (node_modules, .cache, .venv, .git, ...) while letting you add extras
+# without having to copy/paste the whole defaults array.
+[[index_paths]]
+path = "~/.dotfiles"
+max_depth = 0
+exclude_hidden = false  # Show sub-directories like .config inside the repo
+extract_exif = false
+merge_default_exclude_dirs = true
+exclude_dirs = ["secrets"]
