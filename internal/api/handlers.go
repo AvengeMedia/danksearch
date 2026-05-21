@@ -43,7 +43,7 @@ type SearchInput struct {
 	MaxSize         int64    `query:"max_size" doc:"Maximum file size in bytes"`
 	ModifiedAfter   string   `query:"modified_after" doc:"Filter by modification date (RFC3339)" example:"2024-01-01T00:00:00Z"`
 	Facets          []string `query:"facets" doc:"Enable facets for fields" example:"content_type"`
-	Folder          string   `query:"folder" doc:"Filter by folder name (e.g., Pictures) or absolute path (e.g., /home/user/Pictures)" example:"Pictures"`
+	Folder          string   `query:"folder" doc:"Filter by folder path" example:"/home/user/Pictures"`
 	ExifMake        string   `query:"exif_make" doc:"Filter by camera make" example:"Canon"`
 	ExifModel       string   `query:"exif_model" doc:"Filter by camera model" example:"Canon EOS 5D"`
 	ExifDateAfter   string   `query:"exif_date_after" doc:"Photos taken after date" example:"2024-01-01T00:00:00Z"`
