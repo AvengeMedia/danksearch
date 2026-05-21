@@ -26,6 +26,7 @@ import (
 	_ "github.com/blevesearch/bleve/v2/analysis/token/edgengram"
 	_ "github.com/blevesearch/bleve/v2/analysis/token/lowercase"
 	_ "github.com/blevesearch/bleve/v2/analysis/token/ngram"
+	_ "github.com/blevesearch/bleve/v2/analysis/tokenizer/regexp"
 	_ "github.com/blevesearch/bleve/v2/analysis/tokenizer/single"
 	"github.com/blevesearch/bleve/v2/mapping"
 	"github.com/blevesearch/bleve/v2/search"
@@ -34,13 +35,14 @@ import (
 	"github.com/rwcarlsen/goexif/exif"
 )
 
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 type Document struct {
 	Path           string    `json:"path"`
 	Filename       string    `json:"filename"`
 	FilenameSub    string    `json:"filename_sub"`
 	FilenamePrefix string    `json:"filename_prefix"`
+	FilenameWords  string    `json:"filename_words"`
 	Body           string    `json:"body"`
 	ContentType    string    `json:"content_type"`
 	ModTime        time.Time `json:"mtime"`
@@ -70,6 +72,51 @@ type Indexer struct {
 	meta          *metastore.Store
 	mu            sync.RWMutex
 	indexComplete atomic.Bool
+
+	phaseState     atomic.Pointer[phaseState]
+	filesProcessed atomic.Int64
+	bytesProcessed atomic.Int64
+}
+
+type phaseState struct {
+	Name    string
+	Started time.Time
+}
+
+const (
+	PhaseIdle       = "idle"
+	PhaseReindexing = "reindexing"
+	PhaseSyncing    = "syncing"
+)
+
+func (i *Indexer) setPhase(name string) {
+	i.phaseState.Store(&phaseState{Name: name, Started: time.Now()})
+	i.filesProcessed.Store(0)
+	i.bytesProcessed.Store(0)
+}
+
+func (i *Indexer) clearPhase() {
+	i.phaseState.Store(&phaseState{Name: PhaseIdle})
+}
+
+func (i *Indexer) Phase() (string, time.Time) {
+	state := i.phaseState.Load()
+	if state == nil {
+		return PhaseIdle, time.Time{}
+	}
+	return state.Name, state.Started
+}
+
+func (i *Indexer) Progress() (files int64, bytes int64) {
+	return i.filesProcessed.Load(), i.bytesProcessed.Load()
+}
+
+func (i *Indexer) CurrentSchemaVersion() (int, error) {
+	val, err := i.meta.GetMeta("schema_version")
+	if err != nil || val == "" {
+		return 0, err
+	}
+	return strconv.Atoi(val)
 }
 
 type SearchOptions struct {
@@ -221,6 +268,23 @@ func buildIndexMapping() mapping.IndexMapping {
 		panic(err)
 	}
 
+	err = m.AddCustomTokenizer("filename_word_tok", map[string]any{
+		"type":   "regexp",
+		"regexp": `[\p{L}\p{N}]+`,
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	err = m.AddCustomAnalyzer("filename_words", map[string]any{
+		"type":          "custom",
+		"tokenizer":     "filename_word_tok",
+		"token_filters": []string{"to_lower"},
+	})
+	if err != nil {
+		panic(err)
+	}
+
 	docMapping := bleve.NewDocumentMapping()
 
 	pathField := bleve.NewTextFieldMapping()
@@ -243,6 +307,12 @@ func buildIndexMapping() mapping.IndexMapping {
 	filenamePrefixField.Store = false
 	filenamePrefixField.Analyzer = "filename_edge"
 	docMapping.AddFieldMappingsAt("filename_prefix", filenamePrefixField)
+
+	filenameWordsField := bleve.NewTextFieldMapping()
+	filenameWordsField.Store = false
+	filenameWordsField.IncludeTermVectors = false
+	filenameWordsField.Analyzer = "filename_words"
+	docMapping.AddFieldMappingsAt("filename_words", filenameWordsField)
 
 	bodyField := bleve.NewTextFieldMapping()
 	bodyField.Store = false
@@ -333,53 +403,46 @@ func (i *Indexer) Index(path string) error {
 		return err
 	}
 
-	if info.IsDir() {
-		doc := &Document{
-			Path:           path,
-			Filename:       filepath.Base(path),
-			FilenameSub:    filepath.Base(path),
-			FilenamePrefix: filepath.Base(path),
-			ContentType:    "inode/directory",
-			ModTime:        info.ModTime(),
-			DocType:        "dir",
-		}
-
-		i.mu.Lock()
-		err = i.index.Index(path, doc)
-		i.mu.Unlock()
-
-		if err != nil {
-			return errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, path, err)
-		}
-
-		if err := i.meta.Put(path, metastore.FileMeta{ModTime: info.ModTime(), Size: 0}); err != nil {
-			log.Debugf("failed to update metastore for %s: %v", path, err)
-		}
-		i.indexComplete.Store(true)
-		log.Debugf("indexed directory %s", path)
-		return nil
-	}
-
-	doc, err := i.readDocument(path, info)
+	doc, err := i.buildDocument(path, info)
 	if err != nil {
 		return err
 	}
 
-	i.mu.Lock()
-	err = i.index.Index(path, doc)
-	i.mu.Unlock()
-
-	if err != nil {
+	i.mu.RLock()
+	idx := i.index
+	i.mu.RUnlock()
+	if err := idx.Index(path, doc); err != nil {
 		return errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, path, err)
 	}
 
-	if err := i.meta.Put(path, metastore.FileMeta{ModTime: info.ModTime(), Size: info.Size()}); err != nil {
+	size := int64(0)
+	if !info.IsDir() {
+		size = info.Size()
+	}
+	if err := i.meta.Put(path, metastore.FileMeta{ModTime: info.ModTime(), Size: size}); err != nil {
 		log.Debugf("failed to update metastore for %s: %v", path, err)
 	}
 	i.indexComplete.Store(true)
-
 	log.Debugf("indexed %s", path)
 	return nil
+}
+
+func (i *Indexer) buildDocument(path string, info os.FileInfo) (*Document, error) {
+	if !info.IsDir() {
+		return i.readDocument(path, info)
+	}
+
+	base := filepath.Base(path)
+	return &Document{
+		Path:           path,
+		Filename:       base,
+		FilenameSub:    base,
+		FilenamePrefix: base,
+		FilenameWords:  base,
+		ContentType:    "inode/directory",
+		ModTime:        info.ModTime(),
+		DocType:        "dir",
+	}, nil
 }
 
 func (i *Indexer) readDocument(path string, info os.FileInfo) (*Document, error) {
@@ -395,6 +458,7 @@ func (i *Indexer) readDocument(path string, info os.FileInfo) (*Document, error)
 		Filename:       filename,
 		FilenameSub:    filename,
 		FilenamePrefix: filename,
+		FilenameWords:  filename,
 		ContentType:    contentType,
 		ModTime:        info.ModTime(),
 		Size:           info.Size(),
@@ -508,9 +572,10 @@ func (i *Indexer) extractExifData(path string, doc *Document) {
 }
 
 func (i *Indexer) Delete(path string) error {
-	i.mu.Lock()
-	err := i.index.Delete(path)
-	i.mu.Unlock()
+	i.mu.RLock()
+	idx := i.index
+	i.mu.RUnlock()
+	err := idx.Delete(path)
 
 	if err != nil {
 		return errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, "delete failed", err)
@@ -875,6 +940,11 @@ func (i *Indexer) buildFilenameQuery(queryStr string, boostPrefix, boostContains
 	prefixQuery.SetBoost(boostPrefix)
 	disj.AddQuery(prefixQuery)
 
+	wordsQuery := bleve.NewMatchQuery(q)
+	wordsQuery.SetField("filename_words")
+	wordsQuery.SetBoost((boostPrefix + boostContains) / 2)
+	disj.AddQuery(wordsQuery)
+
 	if len(q) >= 2 {
 		matchQuery := bleve.NewMatchQuery(q)
 		matchQuery.SetField("filename_sub")
@@ -934,6 +1004,9 @@ func buildFolderFilter(folder string) query.Query {
 }
 
 func (i *Indexer) ReindexAll() error {
+	i.setPhase(PhaseReindexing)
+	defer i.clearPhase()
+
 	start := time.Now()
 
 	if err := i.meta.Clear(); err != nil {
@@ -964,9 +1037,10 @@ func (i *Indexer) ReindexAll() error {
 
 	var totalFiles int64
 	var totalBytes int64
-	var mu sync.Mutex
 	semaphore := make(chan struct{}, i.config.WorkerCount)
 	var wg sync.WaitGroup
+
+	bat := newBatcher(i, defaultBatchSize, defaultBatchInterval)
 
 	for _, idxPath := range i.config.IndexPaths {
 		log.Infof("indexing %s (max_depth: %d)", idxPath.Path, idxPath.MaxDepth)
@@ -991,9 +1065,12 @@ func (i *Indexer) ReindexAll() error {
 					return filepath.SkipDir
 				}
 
-				if err := i.Index(path); err != nil {
-					log.Debugf("failed to index directory %s: %v", path, err)
+				doc, err := i.buildDocument(path, info)
+				if err != nil {
+					log.Debugf("failed to build directory doc %s: %v", path, err)
+					return nil
 				}
+				bat.submit(batchJob{path: path, doc: doc, mtime: info.ModTime()})
 				return nil
 			}
 
@@ -1007,26 +1084,30 @@ func (i *Indexer) ReindexAll() error {
 				semaphore <- struct{}{}
 				defer func() { <-semaphore }()
 
-				if err := i.Index(p); err != nil {
-					log.Debugf("failed to index %s: %v", p, err)
+				doc, err := i.buildDocument(p, inf)
+				if err != nil {
+					log.Warnf("failed to build doc %s: %v", p, err)
 					return
 				}
+				bat.submit(batchJob{path: p, doc: doc, size: inf.Size(), mtime: inf.ModTime()})
 
-				mu.Lock()
 				atomic.AddInt64(&totalFiles, 1)
 				atomic.AddInt64(&totalBytes, inf.Size())
-				mu.Unlock()
+				i.filesProcessed.Add(1)
+				i.bytesProcessed.Add(inf.Size())
 			}(path, info)
 
 			return nil
 		})
 
 		if err != nil {
+			bat.close()
 			return errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, "walk failed", err)
 		}
 	}
 
 	wg.Wait()
+	bat.close()
 
 	duration := time.Since(start)
 	i.indexComplete.Store(true)
@@ -1047,8 +1128,9 @@ func (i *Indexer) Stats() *config.IndexStats {
 	stats, err := i.calculateStats()
 	if err != nil {
 		log.Warnf("failed to calculate stats: %v", err)
-		return &config.IndexStats{}
+		stats = &config.IndexStats{}
 	}
+	i.attachRuntimeStats(stats)
 	return stats
 }
 
@@ -1067,11 +1149,22 @@ func (i *Indexer) calculateStats() (*config.IndexStats, error) {
 			TotalFiles:    int(count),
 			TotalBytes:    0,
 			LastIndexTime: time.Time{},
-			IndexDuration: "stats unavailable",
+			IndexDuration: "",
 		}, nil
 	}
 
 	return statsDoc, nil
+}
+
+func (i *Indexer) attachRuntimeStats(stats *config.IndexStats) {
+	phase, started := i.Phase()
+	stats.Phase = phase
+	stats.PhaseStartedAt = started
+	stats.FilesProcessed, stats.BytesProcessed = i.Progress()
+	stats.ExpectedSchemaVersion = SchemaVersion
+	if v, err := i.CurrentSchemaVersion(); err == nil {
+		stats.SchemaVersion = v
+	}
 }
 
 type statsMetadata struct {
@@ -1121,13 +1214,17 @@ func (i *Indexer) saveStatsDocument(totalFiles int, totalBytes int64, duration t
 		IndexDuration: duration.String(),
 	}
 
-	i.mu.Lock()
-	defer i.mu.Unlock()
+	i.mu.RLock()
+	idx := i.index
+	i.mu.RUnlock()
 
-	return i.index.Index("__stats__", stats)
+	return idx.Index("__stats__", stats)
 }
 
 func (i *Indexer) SyncIncremental() error {
+	i.setPhase(PhaseSyncing)
+	defer i.clearPhase()
+
 	start := time.Now()
 	log.Infof("starting incremental sync")
 
@@ -1145,6 +1242,8 @@ func (i *Indexer) SyncIncremental() error {
 	}); err != nil {
 		return errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, "failed to read metastore", err)
 	}
+
+	bat := newBatcher(i, defaultBatchSize, defaultBatchInterval)
 
 	for _, idxPath := range i.config.IndexPaths {
 		err := walkFollowSymlinks(idxPath.Path, func(path string, info os.FileInfo, err error) error {
@@ -1165,7 +1264,6 @@ func (i *Indexer) SyncIncremental() error {
 					return filepath.SkipDir
 				}
 
-				// Index the directory and track it for sync
 				pathsMu.Lock()
 				existing, exists := indexedPaths[path]
 				delete(indexedPaths, path)
@@ -1181,9 +1279,12 @@ func (i *Indexer) SyncIncremental() error {
 					return nil
 				}
 
-				if err := i.Index(path); err != nil {
-					log.Debugf("failed to index directory %s: %v", path, err)
+				doc, err := i.buildDocument(path, info)
+				if err != nil {
+					log.Debugf("failed to build directory doc %s: %v", path, err)
+					return nil
 				}
+				bat.submit(batchJob{path: path, doc: doc, mtime: info.ModTime()})
 				return nil
 			}
 
@@ -1212,24 +1313,31 @@ func (i *Indexer) SyncIncremental() error {
 					return
 				}
 
-				if err := i.Index(p); err != nil {
-					log.Debugf("failed to index %s: %v", p, err)
+				doc, err := i.buildDocument(p, inf)
+				if err != nil {
+					log.Warnf("failed to build doc %s: %v", p, err)
 					return
 				}
+				bat.submit(batchJob{path: p, doc: doc, size: inf.Size(), mtime: inf.ModTime()})
+
 				statsMu.Lock()
 				totalBytes += inf.Size()
 				statsMu.Unlock()
+				i.filesProcessed.Add(1)
+				i.bytesProcessed.Add(inf.Size())
 			}(path, info)
 
 			return nil
 		})
 
 		if err != nil {
+			bat.close()
 			return errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, "walk failed", err)
 		}
 	}
 
 	wg.Wait()
+	bat.close()
 
 	for path := range indexedPaths {
 		if err := i.Delete(path); err != nil {

@@ -3,16 +3,27 @@ package client
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/AvengeMedia/danksearch/internal/config"
 	"github.com/AvengeMedia/danksearch/internal/server/models"
 	bleve "github.com/blevesearch/bleve/v2"
 	"github.com/blevesearch/bleve/v2/search"
 )
+
+const (
+	requestTimeout = 10 * time.Second
+	socketWaitTime = 2 * time.Second
+	socketPollGap  = 100 * time.Millisecond
+)
+
+var ErrServiceNotRunning = errors.New("service not running")
 
 type SearchResult struct {
 	*bleve.SearchResult
@@ -35,10 +46,24 @@ func getSocketDir() string {
 }
 
 func findRunningSocket() (string, error) {
+	deadline := time.Now().Add(socketWaitTime)
+	for {
+		socketPath, err := scanForSocket()
+		if err == nil {
+			return socketPath, nil
+		}
+		if time.Now().After(deadline) {
+			return "", ErrServiceNotRunning
+		}
+		time.Sleep(socketPollGap)
+	}
+}
+
+func scanForSocket() (string, error) {
 	dir := getSocketDir()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return "", fmt.Errorf("service not running")
+		return "", ErrServiceNotRunning
 	}
 
 	for _, entry := range entries {
@@ -54,7 +79,7 @@ func findRunningSocket() (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("service not running")
+	return "", ErrServiceNotRunning
 }
 
 func sendRequest(method string, params map[string]any) (json.RawMessage, error) {
@@ -65,9 +90,13 @@ func sendRequest(method string, params map[string]any) (json.RawMessage, error) 
 
 	conn, err := net.Dial("unix", socketPath)
 	if err != nil {
-		return nil, fmt.Errorf("service not running")
+		return nil, ErrServiceNotRunning
 	}
 	defer conn.Close()
+
+	if err := conn.SetDeadline(time.Now().Add(requestTimeout)); err != nil {
+		return nil, err
+	}
 
 	scanner := bufio.NewScanner(conn)
 	// Increase buffer size to handle large responses (default is 64KB max)
@@ -92,6 +121,13 @@ func sendRequest(method string, params map[string]any) (json.RawMessage, error) 
 	}
 
 	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			var nerr net.Error
+			if errors.As(err, &nerr) && nerr.Timeout() {
+				return nil, fmt.Errorf("server did not respond within %s", requestTimeout)
+			}
+			return nil, fmt.Errorf("read failed: %w", err)
+		}
 		return nil, fmt.Errorf("no response from server")
 	}
 
@@ -284,14 +320,14 @@ func Sync() (string, error) {
 	return resp.Status, nil
 }
 
-func Stats() (map[string]any, error) {
+func Stats() (*config.IndexStats, error) {
 	result, err := sendRequest("stats", nil)
 	if err != nil {
 		return nil, err
 	}
 
-	var stats map[string]any
-	if err := json.Unmarshal(result, &stats); err != nil {
+	stats := &config.IndexStats{}
+	if err := json.Unmarshal(result, stats); err != nil {
 		return nil, err
 	}
 

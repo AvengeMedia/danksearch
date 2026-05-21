@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -98,6 +99,43 @@ func (s *IndexerSuite) TestStats() {
 	s.NotNil(idx.Stats())
 }
 
+func (s *IndexerSuite) TestStatsReportsSchemaAndPhase() {
+	idx := s.newIndexer()
+	stats := idx.Stats()
+	s.Equal(SchemaVersion, stats.ExpectedSchemaVersion)
+	s.Equal(PhaseIdle, stats.Phase)
+
+	s.Require().NoError(idx.SaveSchemaVersion())
+	stats = idx.Stats()
+	s.Equal(SchemaVersion, stats.SchemaVersion)
+}
+
+func (s *IndexerSuite) TestPhaseTracksReindex() {
+	s.writeFile("a.txt", "x")
+	s.writeFile("b.txt", "y")
+	idx := s.newIndexer()
+	s.Require().NoError(idx.ReindexAll())
+
+	phase, _ := idx.Phase()
+	s.Equal(PhaseIdle, phase)
+	files, _ := idx.Progress()
+	s.GreaterOrEqual(files, int64(2))
+}
+
+func (s *IndexerSuite) TestBatchedReindexProducesSearchableDocs() {
+	for i := range 50 {
+		s.writeFile(fmt.Sprintf("doc_%03d.txt", i), fmt.Sprintf("content-%d unique-token-%d", i, i))
+	}
+	idx := s.newIndexer()
+	s.Require().NoError(idx.ReindexAll())
+
+	for _, q := range []string{"doc_017", "doc_042", "unique-token-9"} {
+		result, err := idx.Search(q, 5)
+		s.Require().NoError(err)
+		s.NotZero(result.Total, "expected hits for %q", q)
+	}
+}
+
 func (s *IndexerSuite) TestRemoveIndexDir() {
 	idx, err := New(s.cfg)
 	s.Require().NoError(err)
@@ -127,6 +165,62 @@ func (s *IndexerSuite) TestRemoveIndexDirNonExistent() {
 
 func (s *IndexerSuite) TestRemoveIndexDirEmpty() {
 	s.Error(removeIndexDir(""))
+}
+
+func (s *IndexerSuite) TestFilenameWordSeparators() {
+	idx := s.newIndexer()
+
+	target := s.writeFile("My.Show.S01E02.1080p.WEB-DL.mkv", "")
+	s.writeFile("unrelated_video.mp4", "")
+	s.writeFile("notes.txt", "")
+	s.writeFile("report_2024_q4.pdf", "")
+	s.writeFile("vacation-photos-summer.zip", "")
+
+	for _, name := range []string{
+		"My.Show.S01E02.1080p.WEB-DL.mkv",
+		"unrelated_video.mp4",
+		"notes.txt",
+		"report_2024_q4.pdf",
+		"vacation-photos-summer.zip",
+	} {
+		s.Require().NoError(idx.Index(filepath.Join(s.tmpDir, name)))
+	}
+
+	cases := []struct {
+		query string
+		want  string
+	}{
+		{"show", target},
+		{"s01e02", target},
+		{"web", target},
+		{"1080p", target},
+		{"q4", filepath.Join(s.tmpDir, "report_2024_q4.pdf")},
+		{"2024", filepath.Join(s.tmpDir, "report_2024_q4.pdf")},
+		{"summer", filepath.Join(s.tmpDir, "vacation-photos-summer.zip")},
+		{"photos", filepath.Join(s.tmpDir, "vacation-photos-summer.zip")},
+	}
+
+	for _, tc := range cases {
+		s.Run(tc.query, func() {
+			result, err := idx.Search(tc.query, 5)
+			s.Require().NoError(err)
+			s.Require().NotZero(result.Total, "no hits for %q", tc.query)
+			s.Equal(tc.want, result.Hits[0].ID, "top hit for %q should be %s", tc.query, tc.want)
+		})
+	}
+}
+
+func (s *IndexerSuite) TestFilenameQueryWithDots() {
+	idx := s.newIndexer()
+	target := s.writeFile("My.Show.S01E02.mkv", "")
+	s.writeFile("other.mkv", "")
+	s.Require().NoError(idx.Index(target))
+	s.Require().NoError(idx.Index(filepath.Join(s.tmpDir, "other.mkv")))
+
+	result, err := idx.Search("my.show", 5)
+	s.Require().NoError(err)
+	s.Require().NotZero(result.Total)
+	s.Equal(target, result.Hits[0].ID)
 }
 
 func (s *IndexerSuite) TestReadDocument() {

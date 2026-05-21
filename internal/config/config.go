@@ -530,4 +530,11 @@ type IndexStats struct {
 	TotalBytes    int64     `json:"total_bytes"`
 	LastIndexTime time.Time `json:"last_index_time"`
 	IndexDuration string    `json:"index_duration"`
+
+	Phase                 string    `json:"phase,omitempty"`
+	PhaseStartedAt        time.Time `json:"phase_started_at,omitzero"`
+	FilesProcessed        int64     `json:"files_processed,omitempty"`
+	BytesProcessed        int64     `json:"bytes_processed,omitempty"`
+	SchemaVersion         int       `json:"schema_version,omitempty"`
+	ExpectedSchemaVersion int       `json:"expected_schema_version,omitempty"`
 }

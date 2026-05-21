@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -412,7 +413,8 @@ func runSearch(cmd *cobra.Command, args []string) error {
 	}
 
 	result, err := client.SearchWithOptions(clientOpts)
-	if err == nil {
+	switch {
+	case err == nil:
 		if searchJSON {
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
@@ -430,13 +432,13 @@ func runSearch(cmd *cobra.Command, args []string) error {
 			}
 		}
 		return nil
+	case !errors.Is(err, client.ErrServiceNotRunning):
+		return fmt.Errorf("server is running but did not respond: %w", err)
 	}
 
-	cfg := buildConfig()
-
-	idx, err := indexer.New(cfg)
+	idx, err := openLocalIndexer(buildConfig(), 3*time.Second)
 	if err != nil {
-		return fmt.Errorf("server not running and cannot open index: %v", err)
+		return err
 	}
 	defer idx.Close()
 
@@ -514,78 +516,142 @@ func runSearch(cmd *cobra.Command, args []string) error {
 
 func runIndexGenerate(cmd *cobra.Command, args []string) error {
 	status, err := client.Reindex()
-	if err == nil {
+	switch {
+	case err == nil:
 		log.Infof("%s", status)
 		return nil
+	case !errors.Is(err, client.ErrServiceNotRunning):
+		return fmt.Errorf("server is running but did not respond: %w", err)
 	}
 
-	cfg := buildConfig()
-
-	idx, err := indexer.New(cfg)
+	idx, err := openLocalIndexer(buildConfig(), 3*time.Second)
 	if err != nil {
-		return fmt.Errorf("server not running and cannot open index: %v", err)
+		return err
 	}
 	defer idx.Close()
 
 	log.Infof("starting full reindex...")
-	if err := idx.ReindexAll(); err != nil {
-		return err
-	}
-
-	return nil
+	return idx.ReindexAll()
 }
 
 func runIndexSync(cmd *cobra.Command, args []string) error {
 	status, err := client.Sync()
-	if err == nil {
+	switch {
+	case err == nil:
 		log.Infof("%s", status)
 		return nil
+	case !errors.Is(err, client.ErrServiceNotRunning):
+		return fmt.Errorf("server is running but did not respond: %w", err)
 	}
 
-	cfg := buildConfig()
-
-	idx, err := indexer.New(cfg)
+	idx, err := openLocalIndexer(buildConfig(), 3*time.Second)
 	if err != nil {
-		return fmt.Errorf("server not running and cannot open index: %v", err)
+		return err
 	}
 	defer idx.Close()
 
 	log.Infof("starting incremental sync...")
-	if err := idx.SyncIncremental(); err != nil {
-		return err
-	}
-
-	return nil
+	return idx.SyncIncremental()
 }
 
 func runIndexStatus(cmd *cobra.Command, args []string) error {
+	stats, source, err := loadIndexStats()
+	if err != nil {
+		return err
+	}
+	printIndexStatus(stats, source)
+	return nil
+}
+
+func loadIndexStats() (*config.IndexStats, string, error) {
 	stats, err := client.Stats()
-	if err == nil {
-		log.Infof("Index Statistics:")
-		log.Infof("  Total files: %v", stats["total_files"])
-		log.Infof("  Total bytes: %v", stats["total_bytes"])
-		log.Infof("  Last index: %v", stats["last_index_time"])
-		log.Infof("  Duration: %v", stats["index_duration"])
-		return nil
+	switch {
+	case err == nil:
+		return stats, "server", nil
+	case !errors.Is(err, client.ErrServiceNotRunning):
+		return nil, "", fmt.Errorf("server is running but did not respond: %w", err)
 	}
 
-	cfg := buildConfig()
-
-	idx, err := indexer.New(cfg)
+	idx, err := openLocalIndexer(buildConfig(), 3*time.Second)
 	if err != nil {
-		return fmt.Errorf("server not running and cannot open index: %v", err)
+		return nil, "", err
 	}
 	defer idx.Close()
+	return idx.Stats(), "local", nil
+}
 
-	indexStats := idx.Stats()
+func openLocalIndexer(cfg *config.Config, timeout time.Duration) (*indexer.Indexer, error) {
+	type result struct {
+		idx *indexer.Indexer
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		idx, err := indexer.New(cfg)
+		ch <- result{idx, err}
+	}()
 
-	log.Infof("Index Statistics:")
-	log.Infof("  Total files: %d", indexStats.TotalFiles)
-	log.Infof("  Total bytes: %d", indexStats.TotalBytes)
-	log.Infof("  Last index: %v", indexStats.LastIndexTime.Format("2006-01-02 15:04:05"))
-	log.Infof("  Duration: %s", indexStats.IndexDuration)
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			return nil, fmt.Errorf("server not running and cannot open index: %v", r.err)
+		}
+		return r.idx, nil
+	case <-time.After(timeout):
+		return nil, fmt.Errorf("server not running and index is locked by another process (likely the daemon starting up) — try again in a moment")
+	}
+}
 
-	return nil
+func printIndexStatus(stats *config.IndexStats, source string) {
+	log.Infof("Index Statistics (%s):", source)
+
+	schema := fmt.Sprintf("v%d", stats.ExpectedSchemaVersion)
+	switch {
+	case stats.SchemaVersion == 0:
+		schema = fmt.Sprintf("v%d (uninitialized)", stats.ExpectedSchemaVersion)
+	case stats.SchemaVersion != stats.ExpectedSchemaVersion:
+		schema = fmt.Sprintf("v%d → v%d (migrating)", stats.SchemaVersion, stats.ExpectedSchemaVersion)
+	}
+	log.Infof("  Schema:      %s", schema)
+
+	switch stats.Phase {
+	case "", indexer.PhaseIdle:
+		log.Infof("  Status:      idle")
+	default:
+		elapsed := time.Since(stats.PhaseStartedAt).Round(time.Second)
+		log.Infof("  Status:      %s (%s elapsed)", stats.Phase, elapsed)
+		log.Infof("  Progress:    %d files, %s processed",
+			stats.FilesProcessed, formatBytes(stats.BytesProcessed))
+	}
+
+	log.Infof("  Total files: %d", stats.TotalFiles)
+	log.Infof("  Total size:  %s", formatBytes(stats.TotalBytes))
+
+	switch {
+	case stats.LastIndexTime.IsZero():
+		log.Infof("  Last index:  never")
+	default:
+		ago := time.Since(stats.LastIndexTime).Round(time.Second)
+		log.Infof("  Last index:  %s (%s ago)",
+			stats.LastIndexTime.Local().Format("2006-01-02 15:04:05"), ago)
+	}
+
+	if stats.IndexDuration != "" {
+		log.Infof("  Duration:    %s", stats.IndexDuration)
+	}
+}
+
+func formatBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for v := n / unit; v >= unit; v /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 func runIndexDirs(cmd *cobra.Command, args []string) error {
@@ -681,7 +747,8 @@ func runIndexFiles(cmd *cobra.Command, args []string) error {
 	}
 
 	result, err := client.Files(prefix, filesLimit)
-	if err == nil {
+	switch {
+	case err == nil:
 		for _, f := range result.Files {
 			t, _ := time.Parse(time.RFC3339, f.ModTime)
 			fmt.Printf("%s (%s, %s)\n", f.Path, t.Format("2006-01-02"), formatSize(f.Size))
@@ -690,12 +757,13 @@ func runIndexFiles(cmd *cobra.Command, args []string) error {
 			fmt.Printf("(showing %d of %d files)\n", len(result.Files), result.Total)
 		}
 		return nil
+	case !errors.Is(err, client.ErrServiceNotRunning):
+		return fmt.Errorf("server is running but did not respond: %w", err)
 	}
 
-	cfg := buildConfig()
-	idx, err := indexer.New(cfg)
+	idx, err := openLocalIndexer(buildConfig(), 3*time.Second)
 	if err != nil {
-		return fmt.Errorf("server not running and cannot open index: %v", err)
+		return err
 	}
 	defer idx.Close()
 
