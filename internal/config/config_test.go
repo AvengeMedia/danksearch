@@ -72,6 +72,45 @@ func (s *ConfigSuite) TestShouldIndexFile() {
 	}
 }
 
+// When index_all_files is false, only files whose extension is in
+// text_extensions should be indexed (see issue #24); non-text files and files
+// without a matching extension must be skipped, but exclusion rules still apply.
+func (s *ConfigSuite) TestShouldIndexFileTextOnly() {
+	cfg := &Config{
+		IndexAllFiles: false,
+		TextExts:      []string{".go", ".md", ".txt"},
+		IndexPaths: []IndexPath{
+			{
+				Path:          "/home/user",
+				MaxDepth:      10,
+				ExcludeHidden: true,
+				ExcludeDirs:   []string{"node_modules", ".git"},
+			},
+		},
+	}
+	cfg.BuildMaps()
+
+	tests := []struct {
+		name     string
+		path     string
+		expected bool
+	}{
+		{"text go file", "/home/user/project/main.go", true},
+		{"text md file", "/home/user/project/README.md", true},
+		{"non-text image", "/home/user/project/photo.jpg", false},
+		{"non-text binary", "/home/user/project/app.exe", false},
+		{"file without extension", "/home/user/project/README", false},
+		{"text file in excluded dir", "/home/user/project/node_modules/index.go", false},
+		{"hidden text file", "/home/user/project/.config.go", false},
+	}
+
+	for _, tt := range tests {
+		s.Run(tt.name, func() {
+			s.Equal(tt.expected, cfg.ShouldIndexFile(tt.path))
+		})
+	}
+}
+
 func (s *ConfigSuite) TestIsTextFile() {
 	cfg := Default()
 
