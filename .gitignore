@@ -34,3 +34,6 @@ bin/
 
 # Nix build result
 result
+
+# Local git hooks (managed manually / superseded by prek)
+.githooks/
