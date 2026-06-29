@@ -376,7 +376,12 @@ func (c *Config) ShouldIndexFile(path string) bool {
 		return false
 	}
 
-	return c.IndexAllFiles
+	// When index_all_files is disabled, only index files whose extension is in
+	// text_extensions; otherwise nothing would be indexed at all.
+	if c.IndexAllFiles {
+		return true
+	}
+	return c.IsTextFile(path)
 }
 
 func (c *Config) ShouldIndexDir(path string) bool {
