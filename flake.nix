@@ -8,6 +8,26 @@
   outputs =
     { self, nixpkgs }:
     let
+      goModVersion =
+        let
+          content = builtins.readFile ./go.mod;
+          lines = builtins.filter builtins.isString (builtins.split "\n" content);
+          goLines = builtins.filter (l: builtins.match "go [0-9]+\\..*" l != null) lines;
+          matched =
+            if goLines != [ ] then builtins.match "go ([0-9]+)\\.([0-9]+).*" (builtins.head goLines) else null;
+        in
+        if matched != null then
+          {
+            major = builtins.elemAt matched 0;
+            minor = builtins.elemAt matched 1;
+          }
+        else
+          {
+            major = "1";
+            minor = "25";
+          };
+      goForPkgs = pkgs: pkgs.${"go_${goModVersion.major}_${goModVersion.minor}"};
+
       supportedSystems = [
         "x86_64-linux"
         "aarch64-linux"
@@ -28,12 +48,12 @@
           dsearchVersion = "0.3.2";
         in
         {
-          dsearch = pkgs.buildGoModule {
+          dsearch = (pkgs.buildGoModule.override { go = goForPkgs pkgs; }) {
             pname = "dsearch";
             version = dsearchVersion;
             
             src = ./.;
-            vendorHash = "sha256-Gq3tVwe39m5KGfkI3DEnQEQEGs/cLDCiwx6XFM61f6c=";
+            vendorHash = "sha256-qpYOhgTqXascTjuPJj59q0nWB2qyo0ge/KfP5O58L/M=";
 
             subPackages = [ "cmd/dsearch" ];
 

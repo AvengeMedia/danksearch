@@ -3,9 +3,9 @@ package api
 import (
 	"context"
 
+	"github.com/AvengeMedia/dankgo/log"
 	"github.com/AvengeMedia/danksearch/internal/config"
 	"github.com/AvengeMedia/danksearch/internal/indexer"
-	"github.com/AvengeMedia/danksearch/internal/log"
 	bleve "github.com/blevesearch/bleve/v2"
 	"github.com/danielgtaylor/huma/v2"
 )

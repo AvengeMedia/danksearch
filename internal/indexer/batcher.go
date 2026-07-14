@@ -3,7 +3,7 @@ package indexer
 import (
 	"time"
 
-	"github.com/AvengeMedia/danksearch/internal/log"
+	"github.com/AvengeMedia/dankgo/log"
 	"github.com/AvengeMedia/danksearch/internal/metastore"
 )
 

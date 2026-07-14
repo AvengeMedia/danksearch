@@ -6,17 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/signal"
-	"syscall"
-	"time"
-
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/AvengeMedia/dankgo/app"
+	"github.com/AvengeMedia/dankgo/log"
 	"github.com/AvengeMedia/danksearch/internal/client"
 	"github.com/AvengeMedia/danksearch/internal/config"
 	"github.com/AvengeMedia/danksearch/internal/indexer"
-	"github.com/AvengeMedia/danksearch/internal/log"
 	"github.com/AvengeMedia/danksearch/internal/metastore"
 	"github.com/AvengeMedia/danksearch/internal/server"
 	"github.com/AvengeMedia/danksearch/internal/watcher"
@@ -326,52 +324,29 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("cannot specify both --http and --socket flags")
 	}
 
-	runHTTP := !socketOnly
-	runSocket := !httpOnly
+	var runners []app.Runner
 
-	var httpServer *server.HTTPServer
-	var unixServer *server.UnixServer
-
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
-	errChan := make(chan error, 2)
-
-	if runHTTP {
-		httpServer = server.NewHTTP(cfg.ListenAddr, idx, w)
-		go func() {
-			errChan <- httpServer.Start()
-		}()
+	if !socketOnly {
+		runners = append(runners, server.NewHTTP(cfg.ListenAddr, idx, w))
 	}
 
-	if runSocket {
-		router := server.NewRouter(idx, w)
-		unixServer = server.NewUnix(router)
-		go func() {
-			errChan <- unixServer.Start()
-		}()
+	if !httpOnly {
+		unixServer := server.NewUnix(server.NewRouter(idx, w))
+		if err := unixServer.Listen(); err != nil {
+			return err
+		}
+		runners = append(runners, unixServer)
 	}
 
-	select {
-	case err := <-errChan:
-		return err
-	case <-sigChan:
-		log.Infof("received shutdown signal")
-		ctx, cancel := context.WithTimeout(context.Background(), 10)
-		defer cancel()
+	serveErr := app.Serve(context.Background(), runners...)
 
-		if w.IsRunning() {
-			w.Stop()
+	if w.IsRunning() {
+		if err := w.Stop(); err != nil {
+			log.Errorf("failed to stop watcher: %v", err)
 		}
-
-		if unixServer != nil {
-			unixServer.Close()
-		}
-		if httpServer != nil {
-			return httpServer.Shutdown(ctx)
-		}
-		return nil
 	}
+
+	return serveErr
 }
 
 func runSearch(cmd *cobra.Command, args []string) error {
@@ -827,6 +802,10 @@ func runWatchStop(cmd *cobra.Command, args []string) error {
 }
 
 func main() {
+	log.SetEnvPrefix("DANKSEARCH")
+	if os.Getenv("DANKSEARCH_DEBUG") != "" {
+		log.SetLevel("debug")
+	}
 	if err := rootCmd.Execute(); err != nil {
 		log.Fatalf("%v", err)
 	}

@@ -1,24 +1,17 @@
 package client
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"net"
-	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
+	"github.com/AvengeMedia/dankgo/ipc"
 	"github.com/AvengeMedia/danksearch/internal/config"
-	"github.com/AvengeMedia/danksearch/internal/server/models"
 	bleve "github.com/blevesearch/bleve/v2"
 	"github.com/blevesearch/bleve/v2/search"
 )
 
 const (
-	requestTimeout = 10 * time.Second
 	socketWaitTime = 2 * time.Second
 	socketPollGap  = 100 * time.Millisecond
 )
@@ -30,25 +23,10 @@ type SearchResult struct {
 	DirectoryHits search.DocumentMatchCollection `json:"directory_hits,omitempty"`
 }
 
-func getSocketDir() string {
-	if runtime := os.Getenv("XDG_RUNTIME_DIR"); runtime != "" {
-		return runtime
-	}
-
-	if os.Getuid() == 0 {
-		if _, err := os.Stat("/run"); err == nil {
-			return "/run/danksearch"
-		}
-		return "/var/run/danksearch"
-	}
-
-	return os.TempDir()
-}
-
 func findRunningSocket() (string, error) {
 	deadline := time.Now().Add(socketWaitTime)
 	for {
-		socketPath, err := scanForSocket()
+		socketPath, err := ipc.FindRunningSocket("danksearch")
 		if err == nil {
 			return socketPath, nil
 		}
@@ -59,92 +37,28 @@ func findRunningSocket() (string, error) {
 	}
 }
 
-func scanForSocket() (string, error) {
-	dir := getSocketDir()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return "", ErrServiceNotRunning
-	}
-
-	for _, entry := range entries {
-		if !strings.HasPrefix(entry.Name(), "danksearch-") || !strings.HasSuffix(entry.Name(), ".sock") {
-			continue
-		}
-
-		socketPath := filepath.Join(dir, entry.Name())
-		conn, err := net.Dial("unix", socketPath)
-		if err == nil {
-			conn.Close()
-			return socketPath, nil
-		}
-	}
-
-	return "", ErrServiceNotRunning
-}
-
 func sendRequest(method string, params map[string]any) (json.RawMessage, error) {
 	socketPath, err := findRunningSocket()
 	if err != nil {
 		return nil, err
 	}
 
-	conn, err := net.Dial("unix", socketPath)
+	c, err := ipc.Dial(socketPath)
 	if err != nil {
 		return nil, ErrServiceNotRunning
 	}
-	defer conn.Close()
+	defer c.Close()
 
-	if err := conn.SetDeadline(time.Now().Add(requestTimeout)); err != nil {
-		return nil, err
-	}
-
-	scanner := bufio.NewScanner(conn)
-	// Increase buffer size to handle large responses (default is 64KB max)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 10*1024*1024) // 10MB max
-	// Read and discard server info line
-	_ = scanner.Scan()
-
-	req := models.Request{
-		ID:     1,
-		Method: method,
-		Params: params,
-	}
-
-	data, err := json.Marshal(req)
+	resp, err := c.Call(ipc.Request{ID: 1, Method: method, Params: params})
 	if err != nil {
-		return nil, err
-	}
-
-	if _, err := conn.Write(append(data, '\n')); err != nil {
-		return nil, err
-	}
-
-	if !scanner.Scan() {
-		if err := scanner.Err(); err != nil {
-			var nerr net.Error
-			if errors.As(err, &nerr) && nerr.Timeout() {
-				return nil, fmt.Errorf("server did not respond within %s", requestTimeout)
-			}
-			return nil, fmt.Errorf("read failed: %w", err)
-		}
-		return nil, fmt.Errorf("no response from server")
-	}
-
-	var resp struct {
-		ID     int             `json:"id,omitempty"`
-		Result json.RawMessage `json:"result,omitempty"`
-		Error  string          `json:"error,omitempty"`
-	}
-	if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
 		return nil, err
 	}
 
 	if resp.Error != "" {
-		return nil, fmt.Errorf("%s", resp.Error)
+		return nil, errors.New(resp.Error)
 	}
 
-	return resp.Result, nil
+	return json.Marshal(resp.Result)
 }
 
 type SearchOptions struct {

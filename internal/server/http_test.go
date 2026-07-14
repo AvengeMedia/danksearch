@@ -68,12 +68,11 @@ func TestHTTPSuite(t *testing.T) {
 func (s *HTTPSuite) TestNewHTTP() {
 	srv := NewHTTP(":8080", &mockHTTPIndexer{}, &mockHTTPWatcher{})
 	s.Require().NotNil(srv)
-	s.NotNil(srv.server)
-	s.Equal(":8080", srv.server.Addr)
+	s.Equal(":8080", srv.Addr())
 }
 
 func (s *HTTPSuite) TestRoutes() {
-	srv := NewHTTP(":8080", &mockHTTPIndexer{}, &mockHTTPWatcher{})
+	handler := newHTTPHandler(&mockHTTPIndexer{}, &mockHTTPWatcher{})
 
 	tests := []struct {
 		name   string
@@ -91,22 +90,27 @@ func (s *HTTPSuite) TestRoutes() {
 		s.Run(tt.name, func() {
 			req := httptest.NewRequest(tt.method, tt.path, nil)
 			rec := httptest.NewRecorder()
-			srv.server.Handler.ServeHTTP(rec, req)
+			handler.ServeHTTP(rec, req)
 			s.Equal(tt.status, rec.Code)
 		})
 	}
 }
 
 func (s *HTTPSuite) TestShutdown() {
-	srv := NewHTTP(":0", &mockHTTPIndexer{}, &mockHTTPWatcher{})
+	srv := NewHTTP("127.0.0.1:0", &mockHTTPIndexer{}, &mockHTTPWatcher{})
 
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
 	go func() {
-		srv.Start()
+		done <- srv.Serve(ctx)
 	}()
 	time.Sleep(100 * time.Millisecond)
+	cancel()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	s.NoError(srv.Shutdown(ctx))
+	select {
+	case err := <-done:
+		s.NoError(err)
+	case <-time.After(5 * time.Second):
+		s.Fail("server did not shut down")
+	}
 }

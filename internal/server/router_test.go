@@ -1,14 +1,15 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"testing"
 	"time"
 
+	"github.com/AvengeMedia/dankgo/ipc"
 	"github.com/AvengeMedia/danksearch/internal/config"
 	"github.com/AvengeMedia/danksearch/internal/indexer"
-	"github.com/AvengeMedia/danksearch/internal/server/models"
 	bleve "github.com/blevesearch/bleve/v2"
 	"github.com/stretchr/testify/suite"
 )
@@ -75,6 +76,10 @@ func (m *mockConn) Close() error {
 	return nil
 }
 
+func routeRequest(router *Router, conn *mockConn, req ipc.Request) {
+	router.Handle(context.Background(), ipc.NewConnWriter(conn), req, nil)
+}
+
 type RouterSuite struct {
 	suite.Suite
 }
@@ -83,28 +88,16 @@ func TestRouterSuite(t *testing.T) {
 	suite.Run(t, new(RouterSuite))
 }
 
-func (s *RouterSuite) TestPing() {
-	router := NewRouter(&mockRouterIndexer{}, &mockRouterWatcher{})
-	conn := &mockConn{}
-	router.RouteRequest(conn, models.Request{ID: 1, Method: "ping"})
-
-	var resp models.Response[string]
-	s.Require().NoError(json.Unmarshal(conn.written, &resp))
-	s.Equal(1, resp.ID)
-	s.Require().NotNil(resp.Result)
-	s.Equal("pong", *resp.Result)
-}
-
 func (s *RouterSuite) TestSearch() {
 	router := NewRouter(&mockRouterIndexer{}, &mockRouterWatcher{})
 	conn := &mockConn{}
-	router.RouteRequest(conn, models.Request{
+	routeRequest(router, conn, ipc.Request{
 		ID:     2,
 		Method: "search",
 		Params: map[string]any{"query": "test", "limit": float64(10)},
 	})
 
-	var resp models.Response[bleve.SearchResult]
+	var resp ipc.Response[bleve.SearchResult]
 	s.Require().NoError(json.Unmarshal(conn.written, &resp))
 	s.Equal(2, resp.ID)
 	s.Require().NotNil(resp.Result)
@@ -114,9 +107,9 @@ func (s *RouterSuite) TestSearch() {
 func (s *RouterSuite) TestStats() {
 	router := NewRouter(&mockRouterIndexer{}, &mockRouterWatcher{})
 	conn := &mockConn{}
-	router.RouteRequest(conn, models.Request{ID: 3, Method: "stats"})
+	routeRequest(router, conn, ipc.Request{ID: 3, Method: "stats"})
 
-	var resp models.Response[config.IndexStats]
+	var resp ipc.Response[config.IndexStats]
 	s.Require().NoError(json.Unmarshal(conn.written, &resp))
 	s.Require().NotNil(resp.Result)
 	s.EqualValues(100, resp.Result.TotalFiles)
@@ -126,9 +119,9 @@ func (s *RouterSuite) TestWatchStart() {
 	w := &mockRouterWatcher{}
 	router := NewRouter(&mockRouterIndexer{}, w)
 	conn := &mockConn{}
-	router.RouteRequest(conn, models.Request{ID: 4, Method: "watch.start"})
+	routeRequest(router, conn, ipc.Request{ID: 4, Method: "watch.start"})
 
-	var resp models.Response[map[string]string]
+	var resp ipc.Response[map[string]string]
 	s.Require().NoError(json.Unmarshal(conn.written, &resp))
 	s.Require().NotNil(resp.Result)
 	s.Equal("watcher started", (*resp.Result)["status"])
@@ -139,9 +132,9 @@ func (s *RouterSuite) TestWatchStop() {
 	w := &mockRouterWatcher{running: true}
 	router := NewRouter(&mockRouterIndexer{}, w)
 	conn := &mockConn{}
-	router.RouteRequest(conn, models.Request{ID: 5, Method: "watch.stop"})
+	routeRequest(router, conn, ipc.Request{ID: 5, Method: "watch.stop"})
 
-	var resp models.Response[map[string]string]
+	var resp ipc.Response[map[string]string]
 	s.Require().NoError(json.Unmarshal(conn.written, &resp))
 	s.Require().NotNil(resp.Result)
 	s.Equal("watcher stopped", (*resp.Result)["status"])
@@ -162,9 +155,9 @@ func (s *RouterSuite) TestWatchStatus() {
 		s.Run(tt.name, func() {
 			router := NewRouter(&mockRouterIndexer{}, &mockRouterWatcher{running: tt.running})
 			conn := &mockConn{}
-			router.RouteRequest(conn, models.Request{ID: 6, Method: "watch.status"})
+			routeRequest(router, conn, ipc.Request{ID: 6, Method: "watch.status"})
 
-			var resp models.Response[map[string]string]
+			var resp ipc.Response[map[string]string]
 			s.Require().NoError(json.Unmarshal(conn.written, &resp))
 			s.Require().NotNil(resp.Result)
 			s.Equal(tt.expected, (*resp.Result)["status"])
@@ -175,10 +168,10 @@ func (s *RouterSuite) TestWatchStatus() {
 func (s *RouterSuite) TestReindex() {
 	router := NewRouter(&mockRouterIndexer{}, &mockRouterWatcher{})
 	conn := &mockConn{}
-	router.RouteRequest(conn, models.Request{ID: 7, Method: "reindex"})
+	routeRequest(router, conn, ipc.Request{ID: 7, Method: "reindex"})
 	time.Sleep(50 * time.Millisecond)
 
-	var resp models.Response[map[string]string]
+	var resp ipc.Response[map[string]string]
 	s.Require().NoError(json.Unmarshal(conn.written, &resp))
 	s.Require().NotNil(resp.Result)
 	s.Equal("reindexing started", (*resp.Result)["status"])
@@ -187,9 +180,9 @@ func (s *RouterSuite) TestReindex() {
 func (s *RouterSuite) TestUnknownMethod() {
 	router := NewRouter(&mockRouterIndexer{}, &mockRouterWatcher{})
 	conn := &mockConn{}
-	router.RouteRequest(conn, models.Request{ID: 8, Method: "unknown"})
+	routeRequest(router, conn, ipc.Request{ID: 8, Method: "unknown"})
 
-	var resp models.Response[any]
+	var resp ipc.Response[any]
 	s.Require().NoError(json.Unmarshal(conn.written, &resp))
 	s.NotEmpty(resp.Error)
 }

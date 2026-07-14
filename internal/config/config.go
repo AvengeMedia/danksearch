@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AvengeMedia/danksearch/internal/log"
+	"github.com/AvengeMedia/dankgo/log"
 	"github.com/BurntSushi/toml"
 )
 

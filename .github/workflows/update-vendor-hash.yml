@@ -44,7 +44,7 @@ jobs:
           fi
 
           # Extract the correct hash from the error message
-          new_hash=$(echo "$output" | grep -oP "got:\s+\K\S+" | head -n1)
+          new_hash=$(echo "$output" | grep -oP "got:\s+\K\S+" | head -n1 || true)
 
           if [ -z "$new_hash" ]; then
             echo "Could not extract new vendorHash from build output"

@@ -17,9 +17,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/AvengeMedia/dankgo/log"
 	"github.com/AvengeMedia/danksearch/internal/config"
 	"github.com/AvengeMedia/danksearch/internal/errdefs"
-	"github.com/AvengeMedia/danksearch/internal/log"
 	"github.com/AvengeMedia/danksearch/internal/metastore"
 	bleve "github.com/blevesearch/bleve/v2"
 	_ "github.com/blevesearch/bleve/v2/analysis/analyzer/custom"

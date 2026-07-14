@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/AvengeMedia/dankgo/log"
 	"github.com/AvengeMedia/danksearch/internal/config"
 	"github.com/AvengeMedia/danksearch/internal/errdefs"
-	"github.com/AvengeMedia/danksearch/internal/log"
 	"github.com/fsnotify/fsnotify"
 )
 
