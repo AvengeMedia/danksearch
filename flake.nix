@@ -53,7 +53,7 @@
             version = dsearchVersion;
             
             src = ./.;
-            vendorHash = "sha256-qpYOhgTqXascTjuPJj59q0nWB2qyo0ge/KfP5O58L/M=";
+            vendorHash = "sha256-HxLBH/rxt7+oeFG/7oLDstFtx/aFvnmULBdp3FVaoOY=";
 
             subPackages = [ "cmd/dsearch" ];
 
