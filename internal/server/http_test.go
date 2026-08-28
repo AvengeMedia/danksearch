@@ -8,71 +8,39 @@ import (
 	"time"
 
 	"github.com/AvengeMedia/danksearch/internal/config"
-	"github.com/AvengeMedia/danksearch/internal/indexer"
+	mocks_api "github.com/AvengeMedia/danksearch/internal/mocks/api"
 	bleve "github.com/blevesearch/bleve/v2"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
 )
 
-type mockHTTPIndexer struct{}
-
-func (m *mockHTTPIndexer) Search(query string, limit int) (*bleve.SearchResult, error) {
-	return &bleve.SearchResult{Total: 0}, nil
-}
-
-func (m *mockHTTPIndexer) SearchWithOptions(opts *indexer.SearchOptions) (*bleve.SearchResult, error) {
-	return &bleve.SearchResult{Total: 0}, nil
-}
-
-func (m *mockHTTPIndexer) SearchAll(opts *indexer.SearchOptions) (*indexer.SearchResult, error) {
-	return &indexer.SearchResult{SearchResult: &bleve.SearchResult{Total: 0}}, nil
-}
-
-func (m *mockHTTPIndexer) ReindexAll() error {
-	return nil
-}
-
-func (m *mockHTTPIndexer) SyncIncremental() error {
-	return nil
-}
-
-func (m *mockHTTPIndexer) Stats() *config.IndexStats {
-	return &config.IndexStats{}
-}
-
-type mockHTTPWatcher struct {
-	running bool
-}
-
-func (m *mockHTTPWatcher) Start() error {
-	m.running = true
-	return nil
-}
-
-func (m *mockHTTPWatcher) Stop() error {
-	m.running = false
-	return nil
-}
-
-func (m *mockHTTPWatcher) IsRunning() bool {
-	return m.running
-}
-
 type HTTPSuite struct {
 	suite.Suite
+	indexer *mocks_api.MockIndexerInterface
+	watcher *mocks_api.MockWatcherInterface
 }
 
 func TestHTTPSuite(t *testing.T) {
 	suite.Run(t, new(HTTPSuite))
 }
 
+func (s *HTTPSuite) SetupTest() {
+	s.indexer = mocks_api.NewMockIndexerInterface(s.T())
+	s.watcher = mocks_api.NewMockWatcherInterface(s.T())
+}
+
 func (s *HTTPSuite) TestNewHTTP() {
-	srv := NewHTTP(":8080", &mockHTTPIndexer{}, &mockHTTPWatcher{})
+	srv := NewHTTP(":8080", s.indexer, s.watcher)
 	s.Require().NotNil(srv)
 	s.Equal(":8080", srv.Addr())
 }
 
 func (s *HTTPSuite) TestRoutes() {
-	handler := newHTTPHandler(&mockHTTPIndexer{}, &mockHTTPWatcher{})
+	s.indexer.EXPECT().SearchWithOptions(mock.Anything).Return(&bleve.SearchResult{}, nil).Maybe()
+	s.indexer.EXPECT().Stats().Return(&config.IndexStats{}).Maybe()
+	s.watcher.EXPECT().IsRunning().Return(false).Maybe()
+
+	handler := newHTTPHandler(s.indexer, s.watcher)
 
 	tests := []struct {
 		name   string
@@ -97,7 +65,7 @@ func (s *HTTPSuite) TestRoutes() {
 }
 
 func (s *HTTPSuite) TestShutdown() {
-	srv := NewHTTP("127.0.0.1:0", &mockHTTPIndexer{}, &mockHTTPWatcher{})
+	srv := NewHTTP("127.0.0.1:0", s.indexer, s.watcher)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

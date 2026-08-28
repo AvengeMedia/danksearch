@@ -8,61 +8,27 @@ import (
 	"testing"
 
 	"github.com/AvengeMedia/danksearch/internal/config"
+	mocks_handlers "github.com/AvengeMedia/danksearch/internal/mocks/handlers"
 	bleve "github.com/blevesearch/bleve/v2"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
 )
 
-type mockIndexer struct {
-	searchResult *bleve.SearchResult
-	searchError  error
-	reindexError error
-	stats        *config.IndexStats
-}
-
-func (m *mockIndexer) Search(query string, limit int) (*bleve.SearchResult, error) {
-	return m.searchResult, m.searchError
-}
-
-func (m *mockIndexer) ReindexAll() error {
-	return m.reindexError
-}
-
-func (m *mockIndexer) Stats() *config.IndexStats {
-	return m.stats
-}
-
-type mockWatcher struct {
-	running    bool
-	startError error
-	stopError  error
-}
-
-func (m *mockWatcher) Start() error {
-	if m.startError != nil {
-		return m.startError
-	}
-	m.running = true
-	return nil
-}
-
-func (m *mockWatcher) Stop() error {
-	if m.stopError != nil {
-		return m.stopError
-	}
-	m.running = false
-	return nil
-}
-
-func (m *mockWatcher) IsRunning() bool {
-	return m.running
-}
-
 type HandlersSuite struct {
 	suite.Suite
+	indexer *mocks_handlers.MockIndexerInterface
+	watcher *mocks_handlers.MockWatcherInterface
+	handler *Handler
 }
 
 func TestHandlersSuite(t *testing.T) {
 	suite.Run(t, new(HandlersSuite))
+}
+
+func (s *HandlersSuite) SetupTest() {
+	s.indexer = mocks_handlers.NewMockIndexerInterface(s.T())
+	s.watcher = mocks_handlers.NewMockWatcherInterface(s.T())
+	s.handler = New(s.indexer, s.watcher)
 }
 
 func (s *HandlersSuite) TestSearch() {
@@ -80,12 +46,13 @@ func (s *HandlersSuite) TestSearch() {
 
 	for _, tt := range tests {
 		s.Run(tt.name, func() {
-			idx := &mockIndexer{searchResult: tt.mockResult, searchError: tt.mockError}
-			h := New(idx, &mockWatcher{})
+			if tt.query != "" {
+				s.indexer.EXPECT().Search(tt.query, mock.Anything).Return(tt.mockResult, tt.mockError).Once()
+			}
 
 			req := httptest.NewRequest(http.MethodGet, "/search?q="+tt.query, nil)
 			rec := httptest.NewRecorder()
-			h.Search(rec, req)
+			s.handler.Search(rec, req)
 
 			s.Equal(tt.expectedStatus, rec.Code)
 		})
@@ -96,21 +63,19 @@ func (s *HandlersSuite) TestReindex() {
 	tests := []struct {
 		name           string
 		method         string
-		reindexError   error
 		expectedStatus int
 	}{
-		{"successful reindex", http.MethodPost, nil, http.StatusAccepted},
-		{"wrong method", http.MethodGet, nil, http.StatusMethodNotAllowed},
+		{"successful reindex", http.MethodPost, http.StatusAccepted},
+		{"wrong method", http.MethodGet, http.StatusMethodNotAllowed},
 	}
 
 	for _, tt := range tests {
 		s.Run(tt.name, func() {
-			idx := &mockIndexer{reindexError: tt.reindexError}
-			h := New(idx, &mockWatcher{})
+			s.indexer.EXPECT().ReindexAll().Return(nil).Maybe()
 
 			req := httptest.NewRequest(tt.method, "/reindex", nil)
 			rec := httptest.NewRecorder()
-			h.Reindex(rec, req)
+			s.handler.Reindex(rec, req)
 
 			s.Equal(tt.expectedStatus, rec.Code)
 		})
@@ -119,12 +84,11 @@ func (s *HandlersSuite) TestReindex() {
 
 func (s *HandlersSuite) TestStats() {
 	stats := &config.IndexStats{TotalFiles: 100, TotalBytes: 1024}
-	idx := &mockIndexer{stats: stats}
-	h := New(idx, &mockWatcher{})
+	s.indexer.EXPECT().Stats().Return(stats).Once()
 
 	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
 	rec := httptest.NewRecorder()
-	h.Stats(rec, req)
+	s.handler.Stats(rec, req)
 
 	s.Equal(http.StatusOK, rec.Code)
 
@@ -149,12 +113,16 @@ func (s *HandlersSuite) TestWatchStart() {
 
 	for _, tt := range tests {
 		s.Run(tt.name, func() {
-			w := &mockWatcher{running: tt.isRunning, startError: tt.startError}
-			h := New(&mockIndexer{}, w)
+			if tt.method == http.MethodPost {
+				s.watcher.EXPECT().IsRunning().Return(tt.isRunning).Once()
+				if !tt.isRunning {
+					s.watcher.EXPECT().Start().Return(tt.startError).Once()
+				}
+			}
 
 			req := httptest.NewRequest(tt.method, "/watch/start", nil)
 			rec := httptest.NewRecorder()
-			h.WatchStart(rec, req)
+			s.handler.WatchStart(rec, req)
 
 			s.Equal(tt.expectedStatus, rec.Code)
 		})
@@ -176,12 +144,16 @@ func (s *HandlersSuite) TestWatchStop() {
 
 	for _, tt := range tests {
 		s.Run(tt.name, func() {
-			w := &mockWatcher{running: tt.isRunning, stopError: tt.stopError}
-			h := New(&mockIndexer{}, w)
+			if tt.method == http.MethodPost {
+				s.watcher.EXPECT().IsRunning().Return(tt.isRunning).Once()
+				if tt.isRunning {
+					s.watcher.EXPECT().Stop().Return(tt.stopError).Once()
+				}
+			}
 
 			req := httptest.NewRequest(tt.method, "/watch/stop", nil)
 			rec := httptest.NewRecorder()
-			h.WatchStop(rec, req)
+			s.handler.WatchStop(rec, req)
 
 			s.Equal(tt.expectedStatus, rec.Code)
 		})
@@ -200,12 +172,11 @@ func (s *HandlersSuite) TestWatchStatus() {
 
 	for _, tt := range tests {
 		s.Run(tt.name, func() {
-			w := &mockWatcher{running: tt.isRunning}
-			h := New(&mockIndexer{}, w)
+			s.watcher.EXPECT().IsRunning().Return(tt.isRunning).Once()
 
 			req := httptest.NewRequest(http.MethodGet, "/watch/status", nil)
 			rec := httptest.NewRecorder()
-			h.WatchStatus(rec, req)
+			s.handler.WatchStatus(rec, req)
 
 			s.Equal(http.StatusOK, rec.Code)
 

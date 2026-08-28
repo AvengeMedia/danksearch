@@ -3,44 +3,33 @@ package watcher
 import (
 	"os"
 	"path/filepath"
-	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/AvengeMedia/danksearch/internal/config"
+	mocks_watcher "github.com/AvengeMedia/danksearch/internal/mocks/watcher"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
 )
 
-type mockIndexer struct {
-	indexed []string
-	deleted []string
-	mu      sync.Mutex
+type countingIndexer struct {
+	*mocks_watcher.MockIndexer
+	indexed atomic.Int64
+	deleted atomic.Int64
 }
 
-func (m *mockIndexer) Index(path string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.indexed = append(m.indexed, path)
-	return nil
-}
-
-func (m *mockIndexer) Delete(path string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.deleted = append(m.deleted, path)
-	return nil
-}
-
-func (m *mockIndexer) indexedCount() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.indexed)
-}
-
-func (m *mockIndexer) deletedCount() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.deleted)
+func newCountingIndexer(t *testing.T) *countingIndexer {
+	ci := &countingIndexer{MockIndexer: mocks_watcher.NewMockIndexer(t)}
+	ci.EXPECT().Index(mock.Anything).RunAndReturn(func(string) error {
+		ci.indexed.Add(1)
+		return nil
+	}).Maybe()
+	ci.EXPECT().Delete(mock.Anything).RunAndReturn(func(string) error {
+		ci.deleted.Add(1)
+		return nil
+	}).Maybe()
+	return ci
 }
 
 type WatcherSuite struct {
@@ -53,7 +42,7 @@ func TestWatcherSuite(t *testing.T) {
 
 func (s *WatcherSuite) TestNew() {
 	cfg := config.Default()
-	idx := &mockIndexer{}
+	idx := newCountingIndexer(s.T())
 
 	w, err := New(idx, cfg)
 	s.Require().NoError(err)
@@ -75,7 +64,7 @@ func (s *WatcherSuite) TestStartStop() {
 	}
 	cfg.BuildMaps()
 
-	w, err := New(&mockIndexer{}, cfg)
+	w, err := New(newCountingIndexer(s.T()), cfg)
 	s.Require().NoError(err)
 
 	s.False(w.IsRunning())
@@ -101,7 +90,7 @@ func (s *WatcherSuite) TestFileEvents() {
 		},
 	}
 	cfg.BuildMaps()
-	idx := &mockIndexer{}
+	idx := newCountingIndexer(s.T())
 
 	w, err := New(idx, cfg)
 	s.Require().NoError(err)
@@ -111,15 +100,15 @@ func (s *WatcherSuite) TestFileEvents() {
 	testFile := filepath.Join(tmpDir, "test.txt")
 	s.Require().NoError(os.WriteFile(testFile, []byte("hello"), 0644))
 	time.Sleep(100 * time.Millisecond)
-	s.NotZero(idx.indexedCount())
+	s.NotZero(idx.indexed.Load())
 
 	s.Require().NoError(os.WriteFile(testFile, []byte("world"), 0644))
 	time.Sleep(100 * time.Millisecond)
-	s.GreaterOrEqual(idx.indexedCount(), 2)
+	s.GreaterOrEqual(idx.indexed.Load(), int64(2))
 
 	s.Require().NoError(os.Remove(testFile))
 	time.Sleep(100 * time.Millisecond)
-	s.NotZero(idx.deletedCount())
+	s.NotZero(idx.deleted.Load())
 }
 
 func (s *WatcherSuite) TestExcludedDirs() {
@@ -134,7 +123,7 @@ func (s *WatcherSuite) TestExcludedDirs() {
 		},
 	}
 	cfg.BuildMaps()
-	idx := &mockIndexer{}
+	idx := newCountingIndexer(s.T())
 
 	excludedDir := filepath.Join(tmpDir, ".git")
 	s.Require().NoError(os.Mkdir(excludedDir, 0755))
@@ -148,5 +137,5 @@ func (s *WatcherSuite) TestExcludedDirs() {
 	s.Require().NoError(os.WriteFile(testFile, []byte("test"), 0644))
 	time.Sleep(100 * time.Millisecond)
 
-	s.Zero(idx.indexedCount())
+	s.Zero(idx.indexed.Load())
 }

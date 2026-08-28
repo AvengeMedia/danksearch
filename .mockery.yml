@@ -1,0 +1,38 @@
+dir: internal/mocks/{{.InterfaceDirRelative}}
+structname: Mock{{.InterfaceName}}
+pkgname: '{{.SrcPackageName}}'
+filename: 'mock_{{.InterfaceName}}.go'
+template: testify
+template-data:
+  unroll-variadic: true
+packages:
+  github.com/AvengeMedia/danksearch/internal/api:
+    config:
+      dir: internal/mocks/api
+      pkgname: mocks_api
+    interfaces:
+      IndexerInterface: {}
+      WatcherInterface: {}
+  github.com/AvengeMedia/danksearch/internal/handlers:
+    config:
+      dir: internal/mocks/handlers
+      pkgname: mocks_handlers
+    interfaces:
+      IndexerInterface: {}
+      WatcherInterface: {}
+  github.com/AvengeMedia/danksearch/internal/server:
+    config:
+      dir: internal/mocks/server
+      pkgname: mocks_server
+    interfaces:
+      IndexerInterface: {}
+      WatcherInterface: {}
+  github.com/AvengeMedia/danksearch/internal/watcher:
+    config:
+      dir: internal/mocks/watcher
+      pkgname: mocks_watcher
+    interfaces:
+      Indexer: {}
+  net:
+    interfaces:
+      Conn: {}
