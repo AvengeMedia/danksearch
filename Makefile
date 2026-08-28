@@ -27,7 +27,8 @@ build:
 	CGO_ENABLED=0 $(GO) build $(BUILD_LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) $(SOURCE_DIR)/*.go
 	@echo "Build complete: $(BUILD_DIR)/$(BINARY_NAME)"
 
-install: build
+install:
+	@test -f $(BUILD_DIR)/$(BINARY_NAME) || (echo "ERROR: $(BUILD_DIR)/$(BINARY_NAME) not found, run 'make build' first" && exit 1)
 	@echo "Installing $(BINARY_NAME) to $(INSTALL_DIR)..."
 	@mkdir -p $(INSTALL_DIR)
 	@cp $(BUILD_DIR)/$(BINARY_NAME) $(INSTALL_DIR)/$(BINARY_NAME)
