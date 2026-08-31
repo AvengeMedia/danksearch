@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"time"
 
 	"github.com/AvengeMedia/dankgo/log"
@@ -73,6 +74,12 @@ func recoverDBPanic(err *error) {
 	*err = fmt.Errorf("metastore db panic: %v", r)
 }
 
+// a pgid past the mmap end faults instead of panicking; only recoverable while armed
+func armDBFaultPanics() func() {
+	prev := debug.SetPanicOnFault(true)
+	return func() { debug.SetPanicOnFault(prev) }
+}
+
 func tryOpen(path string) (db *bolt.DB, err error) {
 	defer func() {
 		r := recover()
@@ -84,6 +91,7 @@ func tryOpen(path string) (db *bolt.DB, err error) {
 		}
 		db, err = nil, fmt.Errorf("metastore db panic: %v", r)
 	}()
+	defer armDBFaultPanics()()
 
 	db, err = bolt.Open(path, 0600, &bolt.Options{Timeout: 1 * time.Second})
 	if err != nil {
@@ -124,6 +132,7 @@ func tryOpen(path string) (db *bolt.DB, err error) {
 
 func compactInto(srcPath, dstPath string, txMaxSize int64) (err error) {
 	defer recoverDBPanic(&err)
+	defer armDBFaultPanics()()
 
 	srcDB, err := bolt.Open(srcPath, 0600, &bolt.Options{ReadOnly: true, Timeout: time.Second})
 	if err != nil {
@@ -145,11 +154,13 @@ func compactInto(srcPath, dstPath string, txMaxSize int64) (err error) {
 
 func (s *Store) update(fn func(tx *bolt.Tx) error) (err error) {
 	defer recoverDBPanic(&err)
+	defer armDBFaultPanics()()
 	return s.db.Update(fn)
 }
 
 func (s *Store) view(fn func(tx *bolt.Tx) error) (err error) {
 	defer recoverDBPanic(&err)
+	defer armDBFaultPanics()()
 	return s.db.View(fn)
 }
 
