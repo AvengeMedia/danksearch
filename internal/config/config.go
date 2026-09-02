@@ -18,9 +18,9 @@ type IndexPath struct {
 	ExcludeHidden           bool     `toml:"exclude_hidden"`
 	ExcludeDirs             []string `toml:"exclude_dirs"`
 	MergeDefaultExcludeDirs bool     `toml:"merge_default_exclude_dirs,omitempty"`
-	ExtractExif             bool     `toml:"extract_exif"`
+	ExtractExif             *bool    `toml:"extract_exif,omitempty"`
 	ExtractXattrTags        bool     `toml:"extract_xattr_tags"`
-	Watch                   *bool    `toml:"watch,omitempty"` // nil = true (default), false = skip fsnotify
+	Watch                   *bool    `toml:"watch,omitempty"`
 
 	excludeDirsMap   map[string]bool
 	excludeDirsRegex []*regexp.Regexp
@@ -41,87 +41,23 @@ type Config struct {
 	ExcludeHidden bool     `toml:"exclude_hidden,omitempty"`
 	ExcludeDirs   []string `toml:"exclude_dirs,omitempty"`
 
-	textExtsMap map[string]bool
+	textExtsMap   map[string]bool
+	metastorePath string
 }
 
-// DefaultExcludeDirs returns the built-in list of directories that are
-// almost never useful to index. Returns a fresh copy each call so callers
-// may mutate the slice without affecting other callers.
 func DefaultExcludeDirs() []string {
 	return []string{
-		// VCS
-		".git",
-		".hg",
-		".svn",
-
-		// JavaScript/Node.js
-		"node_modules",
-		"bower_components",
-		".npm",
-		".yarn",
-
-		// Python
-		"site-packages",
-		"__pycache__",
-		".venv",
-		"venv",
-		".tox",
-		".pytest_cache",
-		".eggs",
-
-		// Build outputs
-		"dist",
-		"build",
-		"out",
-		"bin",
-		"obj",
-
-		// Rust
-		"target",
-
-		// Go
-		"vendor",
-
-		// Java/JVM
-		".gradle",
-		".m2",
-
-		// Ruby
-		"bundle",
-
-		// Cache directories
-		".cache",
-		".parcel-cache",
-		".next",
-		".nuxt",
-		".serverless",
-
-		// OS specific
-		"Library",
-		".Trash-1000",
-
-		// Databases
-		".postgresql",
-		".postgres",
-		".mysql",
-		".mongodb",
-		".redis",
-		"pgdata",
-		"pg_data",
-
-		// Language package manager caches
-		"go",        // ~/go/pkg/mod - Go module cache
-		".cargo",    // Rust cargo registry
-		".pyenv",    // Python version manager
-		".rbenv",    // Ruby version manager
-		".nvm",      // Node version manager
-		".rustup",   // Rust toolchain manager
-		".composer", // PHP composer cache
-		".gem",      // Ruby gems
-
-		// IDE/Editor (though these are often hidden)
-		".idea",
-		".vscode",
+		".git", ".hg", ".svn",
+		"node_modules", "bower_components", ".npm", ".yarn",
+		"site-packages", "__pycache__", ".venv", "venv", ".tox", ".pytest_cache", ".eggs",
+		"dist", "build", "out", "bin", "obj",
+		"target", "vendor",
+		".gradle", ".m2", "bundle",
+		".cache", ".parcel-cache", ".next", ".nuxt", ".serverless",
+		"Library", ".Trash-1000",
+		".postgresql", ".postgres", ".mysql", ".mongodb", ".redis", "pgdata", "pg_data",
+		"go", ".cargo", ".pyenv", ".rbenv", ".nvm", ".rustup", ".composer", ".gem",
+		".idea", ".vscode",
 	}
 }
 
@@ -146,7 +82,6 @@ func Default() *Config {
 				MaxDepth:      6,
 				ExcludeHidden: true,
 				ExcludeDirs:   DefaultExcludeDirs(),
-				ExtractExif:   true,
 			},
 		},
 		TextExts: []string{
@@ -173,8 +108,12 @@ func Load(path string) (*Config, error) {
 		return cfg, nil
 	}
 
-	if _, err := toml.DecodeFile(path, cfg); err != nil {
+	md, err := toml.DecodeFile(path, cfg)
+	if err != nil {
 		return nil, err
+	}
+	for _, key := range md.Undecoded() {
+		log.Warnf("config: unknown key %q in %s is ignored", key.String(), path)
 	}
 
 	if cfg.RootDir != "" && len(cfg.IndexPaths) == 0 {
@@ -188,7 +127,7 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
-	cfg.expandPaths()
+	cfg.ExpandPaths()
 	cfg.BuildMaps()
 	return cfg, nil
 }
@@ -230,7 +169,7 @@ func expandPath(path string) string {
 	}
 }
 
-func (c *Config) expandPaths() {
+func (c *Config) ExpandPaths() {
 	c.IndexPath = expandPath(c.IndexPath)
 	c.RootDir = expandPath(c.RootDir)
 	for i := range c.IndexPaths {
@@ -239,6 +178,11 @@ func (c *Config) expandPaths() {
 }
 
 func (c *Config) BuildMaps() {
+	c.metastorePath = ""
+	if c.IndexPath != "" {
+		c.metastorePath = filepath.Join(filepath.Dir(c.IndexPath), "meta.db")
+	}
+
 	for i := range c.IndexPaths {
 		dirs := c.IndexPaths[i].resolvedExcludeDirs()
 		c.IndexPaths[i].excludeDirsMap = make(map[string]bool, len(dirs))
@@ -261,14 +205,10 @@ func (c *Config) BuildMaps() {
 
 	c.textExtsMap = make(map[string]bool, len(c.TextExts))
 	for _, ext := range c.TextExts {
-		c.textExtsMap[ext] = true
+		c.textExtsMap[strings.ToLower(ext)] = true
 	}
 }
 
-// resolvedExcludeDirs returns the deduplicated exclude_dirs list for this
-// IndexPath, optionally merged with DefaultExcludeDirs() when
-// merge_default_exclude_dirs is set. Order is preserved (defaults first when
-// merging) so the original config remains diffable.
 func (ip *IndexPath) resolvedExcludeDirs() []string {
 	if !ip.MergeDefaultExcludeDirs {
 		return ip.ExcludeDirs
@@ -332,16 +272,27 @@ func (c *Config) findIndexPath(path string) *IndexPath {
 	var best *IndexPath
 	bestLen := 0
 	for i := range c.IndexPaths {
-		if !strings.HasPrefix(path, c.IndexPaths[i].Path) {
+		root := c.IndexPaths[i].Path
+		if !isWithin(path, root) {
 			continue
 		}
-		if len(c.IndexPaths[i].Path) <= bestLen {
+		if len(root) <= bestLen {
 			continue
 		}
 		best = &c.IndexPaths[i]
-		bestLen = len(c.IndexPaths[i].Path)
+		bestLen = len(root)
 	}
 	return best
+}
+
+func isWithin(path, root string) bool {
+	if path == root {
+		return true
+	}
+	if !strings.HasSuffix(root, string(filepath.Separator)) {
+		root += string(filepath.Separator)
+	}
+	return strings.HasPrefix(path, root)
 }
 
 func (c *Config) FindIndexPath(path string) *IndexPath {
@@ -353,6 +304,9 @@ func (c *Config) ExclusionReason(path string) string {
 	if idxPath == nil {
 		return "not under any configured index path"
 	}
+	if c.isOwnIndexData(path) {
+		return "dsearch index data"
+	}
 	if idxPath.ExcludeHidden && containsHiddenComponent(path, idxPath.Path) {
 		return "hidden"
 	}
@@ -362,9 +316,16 @@ func (c *Config) ExclusionReason(path string) string {
 	return ""
 }
 
+func (c *Config) isOwnIndexData(path string) bool {
+	if c.metastorePath == "" {
+		return false
+	}
+	return isWithin(path, c.IndexPath) || strings.HasPrefix(path, c.metastorePath)
+}
+
 func (c *Config) ShouldIndexFile(path string) bool {
 	idxPath := c.findIndexPath(path)
-	if idxPath == nil {
+	if idxPath == nil || c.isOwnIndexData(path) {
 		return false
 	}
 
@@ -376,8 +337,6 @@ func (c *Config) ShouldIndexFile(path string) bool {
 		return false
 	}
 
-	// When index_all_files is disabled, only index files whose extension is in
-	// text_extensions; otherwise nothing would be indexed at all.
 	if c.IndexAllFiles {
 		return true
 	}
@@ -386,7 +345,7 @@ func (c *Config) ShouldIndexFile(path string) bool {
 
 func (c *Config) ShouldIndexDir(path string) bool {
 	idxPath := c.findIndexPath(path)
-	if idxPath == nil {
+	if idxPath == nil || c.isOwnIndexData(path) {
 		return false
 	}
 
@@ -407,27 +366,11 @@ func containsHiddenComponent(path, rootDir string) bool {
 		return false
 	}
 
-	parts := filepath.SplitList(filepath.ToSlash(rel))
-	for _, part := range parts {
-		if len(part) > 0 && part[0] == '.' {
-			return true
-		}
-	}
-
-	components := []string{}
-	for p := rel; p != "."; p = filepath.Dir(p) {
-		components = append([]string{filepath.Base(p)}, components...)
-		if p == filepath.Dir(p) {
-			break
-		}
-	}
-
-	for _, comp := range components {
+	for _, comp := range strings.Split(rel, string(filepath.Separator)) {
 		if len(comp) > 0 && comp[0] == '.' {
 			return true
 		}
 	}
-
 	return false
 }
 
@@ -441,26 +384,23 @@ func containsExcludedComponent(path, rootDir string, excludeMap map[string]bool,
 		return false
 	}
 
-	// Check each component in the path
-	components := []string{}
-	for p := rel; p != "."; p = filepath.Dir(p) {
-		components = append([]string{filepath.Base(p)}, components...)
-		if p == filepath.Dir(p) {
-			break
-		}
-	}
-
-	for _, comp := range components {
-		if excludeMap[comp] {
+	for _, comp := range strings.Split(rel, string(filepath.Separator)) {
+		if isExcludedComponent(comp, excludeMap, regexes) {
 			return true
 		}
-		for _, re := range regexes {
-			if re.MatchString(comp) {
-				return true
-			}
+	}
+	return false
+}
+
+func isExcludedComponent(comp string, excludeMap map[string]bool, regexes []*regexp.Regexp) bool {
+	if excludeMap[comp] {
+		return true
+	}
+	for _, re := range regexes {
+		if re.MatchString(comp) {
+			return true
 		}
 	}
-
 	return false
 }
 
@@ -470,18 +410,9 @@ func excludedComponent(path, rootDir string, excludeMap map[string]bool, regexes
 		return ""
 	}
 
-	for p := rel; p != "."; p = filepath.Dir(p) {
-		comp := filepath.Base(p)
-		if excludeMap[comp] {
+	for _, comp := range strings.Split(rel, string(filepath.Separator)) {
+		if isExcludedComponent(comp, excludeMap, regexes) {
 			return comp
-		}
-		for _, re := range regexes {
-			if re.MatchString(comp) {
-				return comp
-			}
-		}
-		if p == filepath.Dir(p) {
-			break
 		}
 	}
 	return ""
@@ -501,16 +432,7 @@ func (c *Config) GetDepth(path string) int {
 	if rel == "." {
 		return 0
 	}
-
-	depth := 0
-	for p := rel; p != "."; p = filepath.Dir(p) {
-		depth++
-		if p == filepath.Dir(p) {
-			break
-		}
-	}
-
-	return depth
+	return strings.Count(rel, string(filepath.Separator)) + 1
 }
 
 func (c *Config) GetMaxDepth(path string) int {
@@ -522,12 +444,20 @@ func (c *Config) GetMaxDepth(path string) int {
 }
 
 func (c *Config) IsTextFile(path string) bool {
-	ext := filepath.Ext(path)
-	return c.textExtsMap[ext]
+	return c.textExtsMap[strings.ToLower(filepath.Ext(path))]
 }
 
 func (ip *IndexPath) ShouldWatch() bool {
 	return ip.Watch == nil || *ip.Watch
+}
+
+func (ip *IndexPath) ShouldExtractExif() bool {
+	return ip.ExtractExif == nil || *ip.ExtractExif
+}
+
+func (c *Config) ExtractExif(path string) bool {
+	idxPath := c.findIndexPath(path)
+	return idxPath != nil && idxPath.ShouldExtractExif()
 }
 
 type IndexStats struct {

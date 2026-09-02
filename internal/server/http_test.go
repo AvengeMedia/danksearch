@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/AvengeMedia/danksearch/internal/config"
+	"github.com/AvengeMedia/danksearch/internal/indexer"
 	mocks_api "github.com/AvengeMedia/danksearch/internal/mocks/api"
 	bleve "github.com/blevesearch/bleve/v2"
 	"github.com/stretchr/testify/mock"
@@ -38,6 +39,8 @@ func (s *HTTPSuite) TestNewHTTP() {
 func (s *HTTPSuite) TestRoutes() {
 	s.indexer.EXPECT().SearchWithOptions(mock.Anything).Return(&bleve.SearchResult{}, nil).Maybe()
 	s.indexer.EXPECT().Stats().Return(&config.IndexStats{}).Maybe()
+	s.indexer.EXPECT().ReindexAll().Return(nil).Maybe()
+	s.indexer.EXPECT().SyncIncremental().Return(nil).Maybe()
 	s.watcher.EXPECT().IsRunning().Return(false).Maybe()
 
 	handler := newHTTPHandler(s.indexer, s.watcher)
@@ -52,6 +55,8 @@ func (s *HTTPSuite) TestRoutes() {
 		{"search endpoint", "/search?q=test", http.MethodGet, http.StatusOK},
 		{"stats endpoint", "/stats", http.MethodGet, http.StatusOK},
 		{"watch status endpoint", "/watch/status", http.MethodGet, http.StatusOK},
+		{"reindex endpoint", "/reindex", http.MethodPost, http.StatusOK},
+		{"sync endpoint", "/sync", http.MethodPost, http.StatusOK},
 	}
 
 	for _, tt := range tests {
@@ -80,5 +85,16 @@ func (s *HTTPSuite) TestShutdown() {
 		s.NoError(err)
 	case <-time.After(5 * time.Second):
 		s.Fail("server did not shut down")
+	}
+}
+
+func (s *HTTPSuite) TestReindexRejectedWhileBusy() {
+	s.indexer.EXPECT().Stats().Return(&config.IndexStats{Phase: indexer.PhaseReindexing}).Twice()
+
+	handler := newHTTPHandler(s.indexer, s.watcher)
+	for _, path := range []string{"/reindex", "/sync"} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, nil))
+		s.Equal(http.StatusConflict, rec.Code, path)
 	}
 }

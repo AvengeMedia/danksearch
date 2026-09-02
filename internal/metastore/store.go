@@ -3,6 +3,7 @@ package metastore
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/AvengeMedia/dankgo/log"
 	bolt "go.etcd.io/bbolt"
+	berrors "go.etcd.io/bbolt/errors"
 )
 
 var bucketName = []byte("files")
@@ -31,6 +33,9 @@ func New(indexPath string) (*Store, error) {
 	db, err := tryOpen(dbPath)
 	if err == nil {
 		return &Store{db: db}, nil
+	}
+	if errors.Is(err, berrors.ErrTimeout) {
+		return nil, fmt.Errorf("metastore locked by another process (is the daemon running?): %w", err)
 	}
 
 	log.Errorf("metastore corrupted, salvaging readable entries: %v", err)
@@ -174,6 +179,24 @@ func (s *Store) Put(path string, meta FileMeta) error {
 	})
 }
 
+func (s *Store) PutBatch(entries map[string]FileMeta) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	return s.update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketName)
+		if b == nil {
+			return fmt.Errorf("files bucket missing")
+		}
+		for path, meta := range entries {
+			if err := b.Put([]byte(path), encodeMeta(meta)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 func (s *Store) Get(path string) (FileMeta, bool, error) {
 	var meta FileMeta
 	var found bool
@@ -201,6 +224,24 @@ func (s *Store) Delete(path string) error {
 			return nil
 		}
 		return b.Delete([]byte(path))
+	})
+}
+
+func (s *Store) DeleteBatch(paths []string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	return s.update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketName)
+		if b == nil {
+			return nil
+		}
+		for _, path := range paths {
+			if err := b.Delete([]byte(path)); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 

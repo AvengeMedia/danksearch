@@ -108,7 +108,16 @@ func (r *Router) handleSearch(w *ipc.ConnWriter, req ipc.Request) {
 	ipc.Respond(w, req.ID, &indexer.SearchResult{SearchResult: result})
 }
 
+func (r *Router) busy() bool {
+	stats := r.indexer.Stats()
+	return stats != nil && stats.Phase != "" && stats.Phase != indexer.PhaseIdle
+}
+
 func (r *Router) handleReindex(w *ipc.ConnWriter, req ipc.Request) {
+	if r.busy() {
+		ipc.RespondError(w, req.ID, "index operation already in progress")
+		return
+	}
 	go func() {
 		if err := r.indexer.ReindexAll(); err != nil {
 			log.Errorf("reindex failed: %v", err)
@@ -119,6 +128,10 @@ func (r *Router) handleReindex(w *ipc.ConnWriter, req ipc.Request) {
 }
 
 func (r *Router) handleSync(w *ipc.ConnWriter, req ipc.Request) {
+	if r.busy() {
+		ipc.RespondError(w, req.ID, "index operation already in progress")
+		return
+	}
 	go func() {
 		if err := r.indexer.SyncIncremental(); err != nil {
 			log.Errorf("sync failed: %v", err)

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/csv"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
@@ -28,6 +29,7 @@ import (
 	_ "github.com/blevesearch/bleve/v2/analysis/token/ngram"
 	_ "github.com/blevesearch/bleve/v2/analysis/tokenizer/regexp"
 	_ "github.com/blevesearch/bleve/v2/analysis/tokenizer/single"
+	"github.com/blevesearch/bleve/v2/index/scorch"
 	"github.com/blevesearch/bleve/v2/mapping"
 	"github.com/blevesearch/bleve/v2/search"
 	query "github.com/blevesearch/bleve/v2/search/query"
@@ -35,7 +37,28 @@ import (
 	"github.com/rwcarlsen/goexif/exif"
 )
 
-const SchemaVersion = 3
+const SchemaVersion = 4
+
+const (
+	statsMetaKey      = "stats"
+	rebuildReasonKey  = "rebuild_reason"
+	asyncErrorHandler = "dsearch"
+	exifTimeLayout    = "2006:01:02 15:04:05"
+	deleteChunk       = 500
+)
+
+var openIndexers sync.Map
+
+func init() {
+	scorch.RegistryAsyncErrorCallbacks[asyncErrorHandler] = func(err error, path string) {
+		log.Errorf("index background error at %s: %v", path, err)
+		v, ok := openIndexers.Load(path)
+		if !ok {
+			return
+		}
+		v.(*Indexer).failFatally(err)
+	}
+}
 
 type Document struct {
 	Path           string    `json:"path"`
@@ -50,7 +73,7 @@ type Document struct {
 	Hash           string    `json:"hash"`
 	ExifMake       string    `json:"exif_make,omitempty"`
 	ExifModel      string    `json:"exif_model,omitempty"`
-	ExifDateTime   string    `json:"exif_datetime,omitempty"`
+	ExifDateTime   time.Time `json:"exif_datetime,omitzero"`
 	ExifLatitude   float64   `json:"exif_latitude,omitempty"`
 	ExifLongitude  float64   `json:"exif_longitude,omitempty"`
 	ExifISO        int       `json:"exif_iso,omitempty"`
@@ -71,11 +94,15 @@ type Indexer struct {
 	config        *config.Config
 	meta          *metastore.Store
 	mu            sync.RWMutex
+	opMu          sync.Mutex
 	indexComplete atomic.Bool
 
 	phaseState     atomic.Pointer[phaseState]
 	filesProcessed atomic.Int64
 	bytesProcessed atomic.Int64
+
+	fatal     chan error
+	fatalOnce sync.Once
 }
 
 type phaseState struct {
@@ -88,6 +115,8 @@ const (
 	PhaseReindexing = "reindexing"
 	PhaseSyncing    = "syncing"
 )
+
+var ErrBusy = errdefs.NewCustomError(errdefs.ErrTypeIndexBusy, "index operation already in progress", nil)
 
 func (i *Indexer) setPhase(name string) {
 	i.phaseState.Store(&phaseState{Name: name, Started: time.Now()})
@@ -105,6 +134,11 @@ func (i *Indexer) Phase() (string, time.Time) {
 		return PhaseIdle, time.Time{}
 	}
 	return state.Name, state.Started
+}
+
+func (i *Indexer) Busy() bool {
+	phase, _ := i.Phase()
+	return phase != PhaseIdle
 }
 
 func (i *Indexer) Progress() (files int64, bytes int64) {
@@ -167,7 +201,9 @@ func New(cfg *config.Config) (*Indexer, error) {
 		index:  idx,
 		config: cfg,
 		meta:   meta,
+		fatal:  make(chan error, 1),
 	}
+	openIndexers.Store(cfg.IndexPath, i)
 
 	count, err := idx.DocCount()
 	if err == nil && count > 0 {
@@ -178,8 +214,23 @@ func New(cfg *config.Config) (*Indexer, error) {
 	return i, nil
 }
 
+// bleve's background merger and persister swallow panics and just exit, after
+// which every write blocks forever; the callback is the only way to hear about it.
+func (i *Indexer) Fatal() <-chan error {
+	return i.fatal
+}
+
+func (i *Indexer) failFatally(err error) {
+	i.fatalOnce.Do(func() {
+		if putErr := i.meta.PutMeta(rebuildReasonKey, err.Error()); putErr != nil {
+			log.Errorf("failed to mark index for rebuild: %v", putErr)
+		}
+		i.fatal <- errdefs.NewCustomError(errdefs.ErrTypeIndexCorrupted, "index background task failed, rebuild scheduled on next start", err)
+	})
+}
+
 func openOrCreateIndex(path string) (bleve.Index, error) {
-	idx, err := bleve.Open(path)
+	idx, err := bleve.OpenUsing(path, getIndexConfig())
 	switch {
 	case err == bleve.ErrorIndexPathDoesNotExist:
 		mapping := buildIndexMapping()
@@ -198,10 +249,11 @@ func openOrCreateIndex(path string) (bleve.Index, error) {
 
 func getIndexConfig() map[string]any {
 	return map[string]any{
-		"create_if_missing": true,
-		"error_if_exists":   false,
-		"unsafe_batch":      false,
-		"store":             getStoreConfig(),
+		"create_if_missing":      true,
+		"error_if_exists":        false,
+		"unsafe_batch":           false,
+		"asyncErrorCallbackName": asyncErrorHandler,
+		"store":                  getStoreConfig(),
 	}
 }
 
@@ -214,180 +266,127 @@ func getStoreConfig() map[string]any {
 	}
 }
 
+func mustAdd(err error) {
+	if err != nil {
+		panic(err)
+	}
+}
+
 func buildIndexMapping() mapping.IndexMapping {
 	m := bleve.NewIndexMapping()
 
-	err := m.AddCustomAnalyzer("keyword_lc", map[string]any{
+	mustAdd(m.AddCustomAnalyzer("keyword_lc", map[string]any{
 		"type":          "custom",
 		"tokenizer":     "single",
 		"token_filters": []string{"to_lower"},
-	})
-	if err != nil {
-		panic(err)
-	}
-
-	err = m.AddCustomTokenFilter("ngram_2_15", map[string]any{
+	}))
+	mustAdd(m.AddCustomTokenFilter("ngram_2_15", map[string]any{
 		"type": "ngram",
 		"min":  float64(2),
 		"max":  float64(15),
-	})
-	if err != nil {
-		panic(err)
-	}
-
-	err = m.AddCustomTokenFilter("edge_ngram_2_30", map[string]any{
+	}))
+	mustAdd(m.AddCustomTokenFilter("edge_ngram_2_30", map[string]any{
 		"type": "edge_ngram",
 		"min":  float64(2),
 		"max":  float64(30),
-	})
-	if err != nil {
-		panic(err)
-	}
-
-	err = m.AddCustomAnalyzer("filename_ngram", map[string]any{
-		"type":      "custom",
-		"tokenizer": "single",
-		"token_filters": []string{
-			"to_lower",
-			"ngram_2_15",
-		},
-	})
-	if err != nil {
-		panic(err)
-	}
-
-	err = m.AddCustomAnalyzer("filename_edge", map[string]any{
-		"type":      "custom",
-		"tokenizer": "single",
-		"token_filters": []string{
-			"to_lower",
-			"edge_ngram_2_30",
-		},
-	})
-	if err != nil {
-		panic(err)
-	}
-
-	err = m.AddCustomTokenizer("filename_word_tok", map[string]any{
+	}))
+	mustAdd(m.AddCustomAnalyzer("filename_ngram", map[string]any{
+		"type":          "custom",
+		"tokenizer":     "single",
+		"token_filters": []string{"to_lower", "ngram_2_15"},
+	}))
+	mustAdd(m.AddCustomAnalyzer("filename_edge", map[string]any{
+		"type":          "custom",
+		"tokenizer":     "single",
+		"token_filters": []string{"to_lower", "edge_ngram_2_30"},
+	}))
+	mustAdd(m.AddCustomTokenizer("filename_word_tok", map[string]any{
 		"type":   "regexp",
 		"regexp": `[\p{L}\p{N}]+`,
-	})
-	if err != nil {
-		panic(err)
-	}
-
-	err = m.AddCustomAnalyzer("filename_words", map[string]any{
+	}))
+	mustAdd(m.AddCustomAnalyzer("filename_words", map[string]any{
 		"type":          "custom",
 		"tokenizer":     "filename_word_tok",
 		"token_filters": []string{"to_lower"},
-	})
-	if err != nil {
-		panic(err)
-	}
+	}))
 
 	docMapping := bleve.NewDocumentMapping()
 
-	pathField := bleve.NewTextFieldMapping()
-	pathField.Analyzer = "keyword_lc"
-	pathField.Store = true
-	pathField.IncludeInAll = false
-	docMapping.AddFieldMappingsAt("path", pathField)
+	storedKeyword := func(name string, analyzer string, includeInAll bool) {
+		f := bleve.NewTextFieldMapping()
+		f.Analyzer = analyzer
+		f.Store = true
+		f.IncludeInAll = includeInAll
+		docMapping.AddFieldMappingsAt(name, f)
+	}
+	unstoredText := func(name string, analyzer string) {
+		f := bleve.NewTextFieldMapping()
+		f.Analyzer = analyzer
+		f.Store = false
+		f.IncludeTermVectors = false
+		docMapping.AddFieldMappingsAt(name, f)
+	}
+	storedNumeric := func(name string) {
+		f := bleve.NewNumericFieldMapping()
+		f.Store = true
+		docMapping.AddFieldMappingsAt(name, f)
+	}
+	storedDateTime := func(name string) {
+		f := bleve.NewDateTimeFieldMapping()
+		f.Store = true
+		docMapping.AddFieldMappingsAt(name, f)
+	}
 
-	filenameField := bleve.NewTextFieldMapping()
-	filenameField.Store = true
-	filenameField.Analyzer = "keyword"
-	docMapping.AddFieldMappingsAt("filename", filenameField)
-
-	filenameSubField := bleve.NewTextFieldMapping()
-	filenameSubField.Store = false
-	filenameSubField.Analyzer = "filename_ngram"
-	docMapping.AddFieldMappingsAt("filename_sub", filenameSubField)
-
-	filenamePrefixField := bleve.NewTextFieldMapping()
-	filenamePrefixField.Store = false
-	filenamePrefixField.Analyzer = "filename_edge"
-	docMapping.AddFieldMappingsAt("filename_prefix", filenamePrefixField)
-
-	filenameWordsField := bleve.NewTextFieldMapping()
-	filenameWordsField.Store = false
-	filenameWordsField.IncludeTermVectors = false
-	filenameWordsField.Analyzer = "filename_words"
-	docMapping.AddFieldMappingsAt("filename_words", filenameWordsField)
-
-	bodyField := bleve.NewTextFieldMapping()
-	bodyField.Store = false
-	bodyField.IncludeTermVectors = false
-	docMapping.AddFieldMappingsAt("body", bodyField)
-
-	contentTypeField := bleve.NewTextFieldMapping()
-	contentTypeField.Store = true
-	docMapping.AddFieldMappingsAt("content_type", contentTypeField)
-
-	mtimeField := bleve.NewDateTimeFieldMapping()
-	mtimeField.Store = true
-	docMapping.AddFieldMappingsAt("mtime", mtimeField)
-
-	sizeField := bleve.NewNumericFieldMapping()
-	sizeField.Store = true
-	docMapping.AddFieldMappingsAt("size", sizeField)
-
-	hashField := bleve.NewTextFieldMapping()
-	hashField.Store = true
-	hashField.Analyzer = "keyword"
-	docMapping.AddFieldMappingsAt("hash", hashField)
-
-	exifMakeField := bleve.NewTextFieldMapping()
-	exifMakeField.Store = true
-	exifMakeField.Analyzer = "keyword_lc"
-	exifMakeField.IncludeInAll = false
-	docMapping.AddFieldMappingsAt("exif_make", exifMakeField)
-
-	exifModelField := bleve.NewTextFieldMapping()
-	exifModelField.Store = true
-	exifModelField.Analyzer = "keyword_lc"
-	exifModelField.IncludeInAll = false
-	docMapping.AddFieldMappingsAt("exif_model", exifModelField)
-
-	exifDateTimeField := bleve.NewTextFieldMapping()
-	exifDateTimeField.Store = true
-	docMapping.AddFieldMappingsAt("exif_datetime", exifDateTimeField)
-
-	exifLatField := bleve.NewNumericFieldMapping()
-	exifLatField.Store = true
-	docMapping.AddFieldMappingsAt("exif_latitude", exifLatField)
-
-	exifLonField := bleve.NewNumericFieldMapping()
-	exifLonField.Store = true
-	docMapping.AddFieldMappingsAt("exif_longitude", exifLonField)
-
-	exifISOField := bleve.NewNumericFieldMapping()
-	exifISOField.Store = true
-	docMapping.AddFieldMappingsAt("exif_iso", exifISOField)
-
-	exifFNumField := bleve.NewNumericFieldMapping()
-	exifFNumField.Store = true
-	docMapping.AddFieldMappingsAt("exif_fnumber", exifFNumField)
-
-	exifExpField := bleve.NewTextFieldMapping()
-	exifExpField.Store = true
-	docMapping.AddFieldMappingsAt("exif_exposure", exifExpField)
-
-	exifFocalField := bleve.NewNumericFieldMapping()
-	exifFocalField.Store = true
-	docMapping.AddFieldMappingsAt("exif_focal_length", exifFocalField)
+	storedKeyword("path", "keyword_lc", false)
+	storedKeyword("filename", "keyword_lc", true)
+	unstoredText("filename_sub", "filename_ngram")
+	unstoredText("filename_prefix", "filename_edge")
+	unstoredText("filename_words", "filename_words")
+	unstoredText("body", "")
+	storedKeyword("content_type", "", true)
+	storedDateTime("mtime")
+	storedNumeric("size")
+	storedKeyword("hash", "keyword", true)
+	storedKeyword("exif_make", "keyword_lc", false)
+	storedKeyword("exif_model", "keyword_lc", false)
+	storedDateTime("exif_datetime")
+	storedNumeric("exif_latitude")
+	storedNumeric("exif_longitude")
+	storedNumeric("exif_iso")
+	storedNumeric("exif_fnumber")
+	storedKeyword("exif_exposure", "", true)
+	storedNumeric("exif_focal_length")
+	storedKeyword("doc_type", "keyword", false)
 
 	xattrTagsField := bleve.NewKeywordFieldMapping()
 	xattrTagsField.Store = true
 	docMapping.AddFieldMappingsAt("xattr_tags", xattrTagsField)
 
-	docTypeField := bleve.NewTextFieldMapping()
-	docTypeField.Store = true
-	docTypeField.Analyzer = "keyword"
-	docTypeField.IncludeInAll = false
-	docMapping.AddFieldMappingsAt("doc_type", docTypeField)
-
 	m.DefaultMapping = docMapping
 	return m
+}
+
+func (i *Indexer) currentIndex() bleve.Index {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.index
+}
+
+func fileMeta(info os.FileInfo) metastore.FileMeta {
+	meta := metastore.FileMeta{ModTime: info.ModTime()}
+	if !info.IsDir() {
+		meta.Size = info.Size()
+	}
+	return meta
+}
+
+func (i *Indexer) unchanged(path string, info os.FileInfo) bool {
+	existing, found, err := i.meta.Get(path)
+	if err != nil || !found {
+		return false
+	}
+	current := fileMeta(info)
+	return existing.ModTime.Equal(current.ModTime) && existing.Size == current.Size
 }
 
 func (i *Indexer) Index(path string) error {
@@ -403,23 +402,20 @@ func (i *Indexer) Index(path string) error {
 		return err
 	}
 
+	if i.unchanged(path, info) {
+		return nil
+	}
+
 	doc, err := i.buildDocument(path, info)
 	if err != nil {
 		return err
 	}
 
-	i.mu.RLock()
-	idx := i.index
-	i.mu.RUnlock()
-	if err := idx.Index(path, doc); err != nil {
+	if err := i.currentIndex().Index(path, doc); err != nil {
 		return errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, path, err)
 	}
 
-	size := int64(0)
-	if !info.IsDir() {
-		size = info.Size()
-	}
-	if err := i.meta.Put(path, metastore.FileMeta{ModTime: info.ModTime(), Size: size}); err != nil {
+	if err := i.meta.Put(path, fileMeta(info)); err != nil {
 		log.Debugf("failed to update metastore for %s: %v", path, err)
 	}
 	i.indexComplete.Store(true)
@@ -427,9 +423,15 @@ func (i *Indexer) Index(path string) error {
 	return nil
 }
 
-func (i *Indexer) buildDocument(path string, info os.FileInfo) (*Document, error) {
+func (i *Indexer) buildDocument(path string, info os.FileInfo) (doc *Document, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			doc, err = nil, fmt.Errorf("panic while reading %s: %v", path, r)
+		}
+	}()
+
 	if !info.IsDir() {
-		return i.readDocument(path, info)
+		return i.readDocument(path, info), nil
 	}
 
 	base := filepath.Base(path)
@@ -445,10 +447,9 @@ func (i *Indexer) buildDocument(path string, info os.FileInfo) (*Document, error
 	}, nil
 }
 
-func (i *Indexer) readDocument(path string, info os.FileInfo) (*Document, error) {
+func (i *Indexer) readDocument(path string, info os.FileInfo) *Document {
 	filename := filepath.Base(path)
-	ext := filepath.Ext(path)
-	contentType := mime.TypeByExtension(ext)
+	contentType := mime.TypeByExtension(filepath.Ext(path))
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
@@ -466,24 +467,10 @@ func (i *Indexer) readDocument(path string, info os.FileInfo) (*Document, error)
 	}
 
 	if i.config.IsTextFile(path) {
-		f, err := os.Open(path)
-		if err != nil {
-			return doc, nil
-		}
-		defer f.Close()
-
-		limited := io.LimitReader(f, i.config.MaxFileBytes)
-		content, err := io.ReadAll(limited)
-		if err != nil {
-			return doc, nil
-		}
-
-		hash := sha256.Sum256(content)
-		doc.Body = string(content)
-		doc.Hash = hex.EncodeToString(hash[:])
+		i.readBody(path, doc)
 	}
 
-	if isImageFile(contentType) {
+	if isImageFile(contentType) && i.config.ExtractExif(path) {
 		i.extractExifData(path, doc)
 	}
 
@@ -491,7 +478,24 @@ func (i *Indexer) readDocument(path string, info os.FileInfo) (*Document, error)
 		i.extractXattrTags(path, doc)
 	}
 
-	return doc, nil
+	return doc
+}
+
+func (i *Indexer) readBody(path string, doc *Document) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	content, err := io.ReadAll(io.LimitReader(f, i.config.MaxFileBytes))
+	if err != nil {
+		return
+	}
+
+	hash := sha256.Sum256(content)
+	doc.Body = string(content)
+	doc.Hash = hex.EncodeToString(hash[:])
 }
 
 func (i *Indexer) extractXattrTags(path string, doc *Document) {
@@ -500,11 +504,11 @@ func (i *Indexer) extractXattrTags(path string, doc *Document) {
 		return
 	}
 	parsedTags, _ := csv.NewReader(bytes.NewReader(tags)).Read()
-	if len(parsedTags) > 0 {
-		doc.XattrTags = parsedTags
-		slices.Sort(doc.XattrTags)
-		doc.XattrTags = slices.Compact(doc.XattrTags)
+	if len(parsedTags) == 0 {
+		return
 	}
+	slices.Sort(parsedTags)
+	doc.XattrTags = slices.Compact(parsedTags)
 }
 
 func isImageFile(contentType string) bool {
@@ -535,10 +539,8 @@ func (i *Indexer) extractExifData(path string, doc *Document) {
 		}
 	}
 
-	if dateTime, err := x.Get(exif.DateTime); err == nil {
-		if dtStr, err := dateTime.StringVal(); err == nil {
-			doc.ExifDateTime = dtStr
-		}
+	if dt, err := x.DateTime(); err == nil {
+		doc.ExifDateTime = dt
 	}
 
 	if lat, lon, err := x.LatLong(); err == nil {
@@ -572,19 +574,37 @@ func (i *Indexer) extractExifData(path string, doc *Document) {
 }
 
 func (i *Indexer) Delete(path string) error {
-	i.mu.RLock()
-	idx := i.index
-	i.mu.RUnlock()
-	err := idx.Delete(path)
-
+	paths := []string{path}
+	prefix := strings.TrimRight(path, "/") + "/"
+	err := i.meta.ForEachPrefix(prefix, func(child string, _ metastore.FileMeta) error {
+		paths = append(paths, child)
+		return nil
+	})
 	if err != nil {
-		return errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, "delete failed", err)
+		log.Debugf("failed to list children of %s in metastore: %v", path, err)
 	}
 
-	if err := i.meta.Delete(path); err != nil {
-		log.Debugf("failed to delete %s from metastore: %v", path, err)
+	if err := i.deletePaths(paths); err != nil {
+		return err
 	}
-	log.Debugf("deleted %s from index", path)
+	log.Debugf("deleted %s from index (%d entries)", path, len(paths))
+	return nil
+}
+
+func (i *Indexer) deletePaths(paths []string) error {
+	idx := i.currentIndex()
+	for chunk := range slices.Chunk(paths, deleteChunk) {
+		batch := idx.NewBatch()
+		for _, p := range chunk {
+			batch.Delete(p)
+		}
+		if err := idx.Batch(batch); err != nil {
+			return errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, "delete failed", err)
+		}
+		if err := i.meta.DeleteBatch(chunk); err != nil {
+			log.Debugf("failed to delete %d entries from metastore: %v", len(chunk), err)
+		}
+	}
 	return nil
 }
 
@@ -595,32 +615,50 @@ func (i *Indexer) Search(query string, limit int) (*bleve.SearchResult, error) {
 	})
 }
 
-func (i *Indexer) SearchWithOptions(opts *SearchOptions) (*bleve.SearchResult, error) {
-	if !i.indexComplete.Load() {
-		return nil, errdefs.NewCustomError(errdefs.ErrTypeSearchFailed, "index not ready", nil)
+func parseExifDate(s string) (time.Time, bool) {
+	for _, layout := range []string{exifTimeLayout, time.RFC3339} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func numericRange(field string, lo, hi float64) query.Query {
+	var minVal, maxVal *float64
+	if lo != 0 {
+		minVal = &lo
+	}
+	if hi != 0 {
+		maxVal = &hi
+	}
+	q := bleve.NewNumericRangeInclusiveQuery(minVal, maxVal, nil, nil)
+	q.SetField(field)
+	return q
+}
+
+func termQuery(field, term string) query.Query {
+	q := bleve.NewTermQuery(term)
+	q.SetField(field)
+	return q
+}
+
+func (i *Indexer) buildMainQuery(opts *SearchOptions) query.Query {
+	switch {
+	case opts.Query == "*" || opts.Query == "":
+		return bleve.NewMatchAllQuery()
+	case opts.Field != "":
+		return i.buildFieldQuery(opts.Query, opts.Field, opts.Fuzzy)
 	}
 
-	if opts.Limit <= 0 {
-		opts.Limit = 10
-	}
+	filenameQuery := i.buildFilenameQuery(opts.Query, 20.0, 10.0, opts.Fuzzy)
+	bodyQuery := bleve.NewMatchQuery(opts.Query)
+	bodyQuery.SetField("body")
+	bodyQuery.SetBoost(1.0)
+	return bleve.NewDisjunctionQuery(filenameQuery, bodyQuery)
+}
 
-	// Build the main query
-	var mainQuery query.Query
-
-	if opts.Query == "*" || opts.Query == "" {
-		mainQuery = bleve.NewMatchAllQuery()
-	} else if opts.Field != "" {
-		mainQuery = i.buildFieldQuery(opts.Query, opts.Field, opts.Fuzzy)
-	} else {
-		filenameQuery := i.buildFilenameQuery(opts.Query, 20.0, 10.0)
-		bodyQuery := bleve.NewMatchQuery(opts.Query)
-		bodyQuery.SetField("body")
-		bodyQuery.SetBoost(1.0)
-
-		mainQuery = bleve.NewDisjunctionQuery(filenameQuery, bodyQuery)
-	}
-
-	// Build filters
+func (i *Indexer) buildFilters(opts *SearchOptions) ([]query.Query, error) {
 	filters := []query.Query{}
 
 	if opts.ContentType != "" {
@@ -630,24 +668,13 @@ func (i *Indexer) SearchWithOptions(opts *SearchOptions) (*bleve.SearchResult, e
 	}
 
 	if opts.Extension != "" {
-		extPattern := "*" + strings.ToLower(opts.Extension)
-		extQuery := bleve.NewWildcardQuery(extPattern)
+		extQuery := bleve.NewWildcardQuery("*" + strings.ToLower(opts.Extension))
 		extQuery.SetField("filename")
 		filters = append(filters, extQuery)
 	}
 
-	if opts.MinSize > 0 {
-		minSizeFloat := float64(opts.MinSize)
-		sizeQuery := bleve.NewNumericRangeInclusiveQuery(&minSizeFloat, nil, nil, nil)
-		sizeQuery.SetField("size")
-		filters = append(filters, sizeQuery)
-	}
-
-	if opts.MaxSize > 0 {
-		maxSizeFloat := float64(opts.MaxSize)
-		sizeQuery := bleve.NewNumericRangeInclusiveQuery(nil, &maxSizeFloat, nil, nil)
-		sizeQuery.SetField("size")
-		filters = append(filters, sizeQuery)
+	if opts.MinSize > 0 || opts.MaxSize > 0 {
+		filters = append(filters, numericRange("size", float64(opts.MinSize), float64(opts.MaxSize)))
 	}
 
 	if opts.ModifiedAfter != "" {
@@ -670,236 +697,142 @@ func (i *Indexer) SearchWithOptions(opts *SearchOptions) (*bleve.SearchResult, e
 	}
 
 	switch opts.Type {
-	case "dir":
-		typeQuery := bleve.NewTermQuery("dir")
-		typeQuery.SetField("doc_type")
-		filters = append(filters, typeQuery)
-	case "file":
-		typeQuery := bleve.NewTermQuery("file")
-		typeQuery.SetField("doc_type")
-		filters = append(filters, typeQuery)
+	case "dir", "file":
+		filters = append(filters, termQuery("doc_type", opts.Type))
 	case "all":
-		// no type filter — return everything
-	default: // "" — exclude dirs (backwards compat with indexes lacking doc_type)
-		dirQuery := bleve.NewTermQuery("dir")
-		dirQuery.SetField("doc_type")
+	default:
 		excludeDirs := bleve.NewBooleanQuery()
-		excludeDirs.AddMustNot(dirQuery)
+		excludeDirs.AddMustNot(termQuery("doc_type", "dir"))
 		filters = append(filters, excludeDirs)
 	}
 
 	if opts.ExifMake != "" {
-		exifMakeQuery := bleve.NewTermQuery(strings.ToLower(opts.ExifMake))
-		exifMakeQuery.SetField("exif_make")
-		filters = append(filters, exifMakeQuery)
+		filters = append(filters, termQuery("exif_make", strings.ToLower(opts.ExifMake)))
 	}
 
 	if opts.ExifModel != "" {
-		exifModelQuery := bleve.NewTermQuery(strings.ToLower(opts.ExifModel))
-		exifModelQuery.SetField("exif_model")
-		filters = append(filters, exifModelQuery)
+		filters = append(filters, termQuery("exif_model", strings.ToLower(opts.ExifModel)))
 	}
 
 	if opts.ExifDateAfter != "" || opts.ExifDateBefore != "" {
-		var minTime, maxTime *time.Time
-		if opts.ExifDateAfter != "" {
-			if t, err := time.Parse("2006:01:02 15:04:05", opts.ExifDateAfter); err == nil {
-				minTime = &t
-			} else if t, err := time.Parse(time.RFC3339, opts.ExifDateAfter); err == nil {
-				minTime = &t
-			}
-		}
-		if opts.ExifDateBefore != "" {
-			if t, err := time.Parse("2006:01:02 15:04:05", opts.ExifDateBefore); err == nil {
-				maxTime = &t
-			} else if t, err := time.Parse(time.RFC3339, opts.ExifDateBefore); err == nil {
-				maxTime = &t
-			}
-		}
-		if minTime != nil || maxTime != nil {
-			dateQuery := bleve.NewDateRangeInclusiveQuery(*minTime, *maxTime, nil, nil)
+		after, _ := parseExifDate(opts.ExifDateAfter)
+		before, _ := parseExifDate(opts.ExifDateBefore)
+		if !after.IsZero() || !before.IsZero() {
+			dateQuery := bleve.NewDateRangeInclusiveQuery(after, before, nil, nil)
 			dateQuery.SetField("exif_datetime")
 			filters = append(filters, dateQuery)
 		}
 	}
 
 	if opts.ExifMinISO > 0 || opts.ExifMaxISO > 0 {
-		var minISO, maxISO *float64
-		if opts.ExifMinISO > 0 {
-			v := float64(opts.ExifMinISO)
-			minISO = &v
-		}
-		if opts.ExifMaxISO > 0 {
-			v := float64(opts.ExifMaxISO)
-			maxISO = &v
-		}
-		isoQuery := bleve.NewNumericRangeInclusiveQuery(minISO, maxISO, nil, nil)
-		isoQuery.SetField("exif_iso")
-		filters = append(filters, isoQuery)
+		filters = append(filters, numericRange("exif_iso", float64(opts.ExifMinISO), float64(opts.ExifMaxISO)))
 	}
-
 	if opts.ExifMinAperture > 0 || opts.ExifMaxAperture > 0 {
-		var minAp, maxAp *float64
-		if opts.ExifMinAperture > 0 {
-			minAp = &opts.ExifMinAperture
-		}
-		if opts.ExifMaxAperture > 0 {
-			maxAp = &opts.ExifMaxAperture
-		}
-		apQuery := bleve.NewNumericRangeInclusiveQuery(minAp, maxAp, nil, nil)
-		apQuery.SetField("exif_fnumber")
-		filters = append(filters, apQuery)
+		filters = append(filters, numericRange("exif_fnumber", opts.ExifMinAperture, opts.ExifMaxAperture))
 	}
-
 	if opts.ExifMinFocalLen > 0 || opts.ExifMaxFocalLen > 0 {
-		var minFL, maxFL *float64
-		if opts.ExifMinFocalLen > 0 {
-			minFL = &opts.ExifMinFocalLen
-		}
-		if opts.ExifMaxFocalLen > 0 {
-			maxFL = &opts.ExifMaxFocalLen
-		}
-		flQuery := bleve.NewNumericRangeInclusiveQuery(minFL, maxFL, nil, nil)
-		flQuery.SetField("exif_focal_length")
-		filters = append(filters, flQuery)
+		filters = append(filters, numericRange("exif_focal_length", opts.ExifMinFocalLen, opts.ExifMaxFocalLen))
 	}
-
 	if opts.ExifLatMin != 0 || opts.ExifLatMax != 0 {
-		var minLat, maxLat *float64
-		if opts.ExifLatMin != 0 {
-			minLat = &opts.ExifLatMin
-		}
-		if opts.ExifLatMax != 0 {
-			maxLat = &opts.ExifLatMax
-		}
-		latQuery := bleve.NewNumericRangeInclusiveQuery(minLat, maxLat, nil, nil)
-		latQuery.SetField("exif_latitude")
-		filters = append(filters, latQuery)
+		filters = append(filters, numericRange("exif_latitude", opts.ExifLatMin, opts.ExifLatMax))
 	}
-
 	if opts.ExifLonMin != 0 || opts.ExifLonMax != 0 {
-		var minLon, maxLon *float64
-		if opts.ExifLonMin != 0 {
-			minLon = &opts.ExifLonMin
-		}
-		if opts.ExifLonMax != 0 {
-			maxLon = &opts.ExifLonMax
-		}
-		lonQuery := bleve.NewNumericRangeInclusiveQuery(minLon, maxLon, nil, nil)
-		lonQuery.SetField("exif_longitude")
-		filters = append(filters, lonQuery)
+		filters = append(filters, numericRange("exif_longitude", opts.ExifLonMin, opts.ExifLonMax))
 	}
 
 	if i.config.IndexXattrTags && opts.XattrTags != "" {
-		tags, _ := csv.NewReader(strings.NewReader(opts.XattrTags)).Read()
-		if len(tags) > 0 {
-			tagsQuery := bleve.NewBooleanQuery()
-			for _, tag := range tags {
-				if len(tag) == 0 {
-					continue
-				}
-
-				addFn := tagsQuery.AddShould
-				switch tag[0] {
-				case '-':
-					tag = tag[1:]
-					addFn = tagsQuery.AddMustNot
-				case '+':
-					tag = tag[1:]
-					addFn = tagsQuery.AddMust
-				}
-
-				if len(tag) == 0 {
-					continue
-				}
-
-				tagQuery := bleve.NewTermQuery(tag)
-				tagQuery.SetField("xattr_tags")
-				addFn(tagQuery)
-			}
+		if tagsQuery := buildXattrTagsQuery(opts.XattrTags); tagsQuery != nil {
 			filters = append(filters, tagsQuery)
 		}
 	}
 
-	// Combine main query with filters
-	var finalQuery query.Query
-	if len(filters) > 0 {
-		conjunctQueries := append([]query.Query{mainQuery}, filters...)
-		finalQuery = bleve.NewConjunctionQuery(conjunctQueries...)
-	} else {
-		finalQuery = mainQuery
+	return filters, nil
+}
+
+func buildXattrTagsQuery(spec string) query.Query {
+	tags, _ := csv.NewReader(strings.NewReader(spec)).Read()
+	tagsQuery := bleve.NewBooleanQuery()
+	added := 0
+	for _, tag := range tags {
+		if tag == "" {
+			continue
+		}
+
+		addFn := tagsQuery.AddShould
+		switch tag[0] {
+		case '-':
+			tag = tag[1:]
+			addFn = tagsQuery.AddMustNot
+		case '+':
+			tag = tag[1:]
+			addFn = tagsQuery.AddMust
+		}
+		if tag == "" {
+			continue
+		}
+
+		addFn(termQuery("xattr_tags", tag))
+		added++
+	}
+	if added == 0 {
+		return nil
+	}
+	return tagsQuery
+}
+
+var sortFields = map[string]string{
+	"mtime":             "mtime",
+	"size":              "size",
+	"filename":          "filename",
+	"exif_date":         "exif_datetime",
+	"exif_datetime":     "exif_datetime",
+	"exif_iso":          "exif_iso",
+	"iso":               "exif_iso",
+	"exif_focal_length": "exif_focal_length",
+	"focal_length":      "exif_focal_length",
+	"exif_fnumber":      "exif_fnumber",
+	"aperture":          "exif_fnumber",
+}
+
+func sortSpec(sortBy string, desc bool) string {
+	field, ok := sortFields[sortBy]
+	if !ok {
+		return "-_score"
+	}
+	if desc {
+		return "-" + field
+	}
+	return field
+}
+
+func (i *Indexer) SearchWithOptions(opts *SearchOptions) (*bleve.SearchResult, error) {
+	if !i.indexComplete.Load() {
+		return nil, errdefs.NewCustomError(errdefs.ErrTypeSearchFailed, "index not ready", nil)
 	}
 
-	// Build search request
+	if opts.Limit <= 0 {
+		opts.Limit = 10
+	}
+
+	filters, err := i.buildFilters(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	finalQuery := i.buildMainQuery(opts)
+	if len(filters) > 0 {
+		finalQuery = bleve.NewConjunctionQuery(append([]query.Query{finalQuery}, filters...)...)
+	}
+
 	req := bleve.NewSearchRequest(finalQuery)
 	req.Size = opts.Limit
 	req.Highlight = bleve.NewHighlight()
-
-	// Add facets
 	for _, facet := range opts.Facets {
 		req.AddFacet(facet, bleve.NewFacetRequest(facet, 10))
 	}
+	req.SortBy([]string{sortSpec(opts.SortBy, opts.SortDesc)})
 
-	// Set sorting
-	sortBy := opts.SortBy
-	if sortBy == "" {
-		sortBy = "score"
-	}
-
-	switch sortBy {
-	case "mtime":
-		if opts.SortDesc {
-			req.SortBy([]string{"-mtime"})
-		} else {
-			req.SortBy([]string{"mtime"})
-		}
-	case "size":
-		if opts.SortDesc {
-			req.SortBy([]string{"-size"})
-		} else {
-			req.SortBy([]string{"size"})
-		}
-	case "filename":
-		if opts.SortDesc {
-			req.SortBy([]string{"-filename"})
-		} else {
-			req.SortBy([]string{"filename"})
-		}
-	case "exif_date", "exif_datetime":
-		if opts.SortDesc {
-			req.SortBy([]string{"-exif_datetime"})
-		} else {
-			req.SortBy([]string{"exif_datetime"})
-		}
-	case "exif_iso", "iso":
-		if opts.SortDesc {
-			req.SortBy([]string{"-exif_iso"})
-		} else {
-			req.SortBy([]string{"exif_iso"})
-		}
-	case "exif_focal_length", "focal_length":
-		if opts.SortDesc {
-			req.SortBy([]string{"-exif_focal_length"})
-		} else {
-			req.SortBy([]string{"exif_focal_length"})
-		}
-	case "exif_fnumber", "aperture":
-		if opts.SortDesc {
-			req.SortBy([]string{"-exif_fnumber"})
-		} else {
-			req.SortBy([]string{"exif_fnumber"})
-		}
-	default: // score
-		req.SortBy([]string{"-_score"})
-	}
-
-	// Only hold RLock briefly to get the index reference
-	// Bleve's index is thread-safe, so we don't need to hold the lock during search
-	i.mu.RLock()
-	idx := i.index
-	i.mu.RUnlock()
-
-	result, err := idx.Search(req)
+	result, err := i.currentIndex().Search(req)
 	if err != nil {
 		return nil, errdefs.NewCustomError(errdefs.ErrTypeSearchFailed, opts.Query, err)
 	}
@@ -928,13 +861,13 @@ func (i *Indexer) SearchAll(opts *SearchOptions) (*SearchResult, error) {
 	}, nil
 }
 
-func (i *Indexer) buildFilenameQuery(queryStr string, boostPrefix, boostContains float64) query.Query {
+func (i *Indexer) buildFilenameQuery(queryStr string, boostPrefix, boostContains float64, fuzzy bool) query.Query {
 	q := strings.TrimSpace(queryStr)
 	if q == "" {
 		return bleve.NewMatchNoneQuery()
 	}
 
-	if strings.Contains(q, "*") || strings.Contains(q, "?") {
+	if strings.ContainsAny(q, "*?") {
 		wildcardQuery := bleve.NewWildcardQuery(strings.ToLower(q))
 		wildcardQuery.SetField("filename")
 		return wildcardQuery
@@ -956,27 +889,21 @@ func (i *Indexer) buildFilenameQuery(queryStr string, boostPrefix, boostContains
 		matchQuery := bleve.NewMatchQuery(q)
 		matchQuery.SetField("filename_sub")
 		matchQuery.SetBoost(boostContains)
+		if !fuzzy {
+			matchQuery.SetOperator(query.MatchQueryOperatorAnd)
+		}
 		disj.AddQuery(matchQuery)
 	}
 
-	if len(disj.Disjuncts) == 1 {
-		return disj.Disjuncts[0]
-	}
 	return disj
 }
 
 func (i *Indexer) buildFieldQuery(queryStr, field string, fuzzy bool) query.Query {
-	if field == "filename" {
-		return i.buildFilenameQuery(queryStr, 2.0, 1.0)
-	}
-
-	if field == "body" {
-		if fuzzy {
-			q := bleve.NewFuzzyQuery(queryStr)
-			q.SetField("body")
-			return q
-		}
-		q := bleve.NewMatchQuery(queryStr)
+	switch {
+	case field == "filename":
+		return i.buildFilenameQuery(queryStr, 2.0, 1.0, fuzzy)
+	case field == "body" && fuzzy:
+		q := bleve.NewFuzzyQuery(queryStr)
 		q.SetField("body")
 		return q
 	}
@@ -986,7 +913,93 @@ func (i *Indexer) buildFieldQuery(queryStr, field string, fuzzy bool) query.Quer
 	return q
 }
 
+type walkStats struct {
+	files int64
+	bytes int64
+}
+
+type fileJob struct {
+	path string
+	info os.FileInfo
+}
+
+func (i *Indexer) walkIndexPaths(bat *batcher, shouldIndex func(path string, info os.FileInfo) bool) walkStats {
+	var stats walkStats
+	jobs := make(chan fileJob, i.config.WorkerCount*2)
+	var wg sync.WaitGroup
+
+	for range max(i.config.WorkerCount, 1) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range jobs {
+				doc, err := i.buildDocument(job.path, job.info)
+				if err != nil {
+					log.Warnf("failed to build doc %s: %v", job.path, err)
+					continue
+				}
+				bat.submit(batchJob{path: job.path, doc: doc, meta: fileMeta(job.info)})
+
+				atomic.AddInt64(&stats.files, 1)
+				atomic.AddInt64(&stats.bytes, job.info.Size())
+				i.filesProcessed.Add(1)
+				i.bytesProcessed.Add(job.info.Size())
+			}
+		}()
+	}
+
+	for _, idxPath := range i.config.IndexPaths {
+		log.Infof("walking %s (max_depth: %d)", idxPath.Path, idxPath.MaxDepth)
+
+		walkFollowSymlinks(idxPath.Path, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				log.Debugf("skipping %s: %v", path, err)
+				return nil
+			}
+
+			if info.IsDir() {
+				if !i.walkableDir(path) {
+					return filepath.SkipDir
+				}
+				if !shouldIndex(path, info) {
+					return nil
+				}
+				doc, err := i.buildDocument(path, info)
+				if err != nil {
+					log.Debugf("failed to build directory doc %s: %v", path, err)
+					return nil
+				}
+				bat.submit(batchJob{path: path, doc: doc, meta: fileMeta(info)})
+				return nil
+			}
+
+			if !i.config.ShouldIndexFile(path) || !shouldIndex(path, info) {
+				return nil
+			}
+			jobs <- fileJob{path: path, info: info}
+			return nil
+		})
+	}
+
+	close(jobs)
+	wg.Wait()
+	return stats
+}
+
+func (i *Indexer) walkableDir(path string) bool {
+	if !i.config.ShouldIndexDir(path) {
+		return false
+	}
+	maxDepth := i.config.GetMaxDepth(path)
+	return maxDepth <= 0 || i.config.GetDepth(path) < maxDepth
+}
+
 func (i *Indexer) ReindexAll() error {
+	if !i.opMu.TryLock() {
+		return ErrBusy
+	}
+	defer i.opMu.Unlock()
+
 	i.setPhase(PhaseReindexing)
 	defer i.clearPhase()
 
@@ -996,13 +1009,33 @@ func (i *Indexer) ReindexAll() error {
 		return errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, "failed to clear metastore", err)
 	}
 
+	if err := i.replaceIndex(); err != nil {
+		return err
+	}
+
+	bat := newBatcher(i, defaultBatchSize, defaultBatchInterval)
+	stats := i.walkIndexPaths(bat, func(string, os.FileInfo) bool { return true })
+	bat.close()
+
+	duration := time.Since(start)
+	i.indexComplete.Store(true)
+	i.finishOperation(int(stats.files), stats.bytes, duration)
+	if err := i.meta.PutMeta(rebuildReasonKey, ""); err != nil {
+		log.Warnf("failed to clear rebuild marker: %v", err)
+	}
+
+	log.Infof("reindex complete: %d files, %d bytes, took %s", stats.files, stats.bytes, duration)
+	return nil
+}
+
+func (i *Indexer) replaceIndex() error {
 	i.mu.Lock()
+	defer i.mu.Unlock()
+
 	indexPath := i.config.IndexPath
 	if err := i.index.Close(); err != nil {
-		i.mu.Unlock()
 		return errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, "failed to close index", err)
 	}
-	i.mu.Unlock()
 
 	if err := removeIndexDir(indexPath); err != nil {
 		return errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, "failed to remove index", err)
@@ -1013,97 +1046,77 @@ func (i *Indexer) ReindexAll() error {
 		return errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, "failed to create new index", err)
 	}
 
-	i.mu.Lock()
 	i.index = newIndex
 	i.indexComplete.Store(false)
-	i.mu.Unlock()
+	return nil
+}
 
-	var totalFiles int64
-	var totalBytes int64
-	semaphore := make(chan struct{}, i.config.WorkerCount)
-	var wg sync.WaitGroup
+func (i *Indexer) finishOperation(totalFiles int, totalBytes int64, duration time.Duration) {
+	if err := i.saveStatsDocument(totalFiles, totalBytes, duration); err != nil {
+		log.Warnf("failed to save stats: %v", err)
+	}
+	if err := i.SaveSchemaVersion(); err != nil {
+		log.Warnf("failed to save schema version: %v", err)
+	}
+}
 
-	bat := newBatcher(i, defaultBatchSize, defaultBatchInterval)
+func (i *Indexer) SyncIncremental() error {
+	if !i.opMu.TryLock() {
+		return ErrBusy
+	}
+	defer i.opMu.Unlock()
 
-	for _, idxPath := range i.config.IndexPaths {
-		log.Infof("indexing %s (max_depth: %d)", idxPath.Path, idxPath.MaxDepth)
+	i.setPhase(PhaseSyncing)
+	defer i.clearPhase()
 
-		err := walkFollowSymlinks(idxPath.Path, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				if os.IsPermission(err) {
-					log.Debugf("permission denied: %s", path)
-					return nil
-				}
-				return err
-			}
+	start := time.Now()
+	log.Infof("starting incremental sync")
 
-			if info.IsDir() {
-				depth := i.config.GetDepth(path)
-				maxDepth := i.config.GetMaxDepth(path)
-				if maxDepth > 0 && depth >= maxDepth {
-					return filepath.SkipDir
-				}
-
-				if !i.config.ShouldIndexDir(path) {
-					return filepath.SkipDir
-				}
-
-				doc, err := i.buildDocument(path, info)
-				if err != nil {
-					log.Debugf("failed to build directory doc %s: %v", path, err)
-					return nil
-				}
-				bat.submit(batchJob{path: path, doc: doc, mtime: info.ModTime()})
-				return nil
-			}
-
-			if !i.config.ShouldIndexFile(path) {
-				return nil
-			}
-
-			wg.Add(1)
-			go func(p string, inf os.FileInfo) {
-				defer wg.Done()
-				semaphore <- struct{}{}
-				defer func() { <-semaphore }()
-
-				doc, err := i.buildDocument(p, inf)
-				if err != nil {
-					log.Warnf("failed to build doc %s: %v", p, err)
-					return
-				}
-				bat.submit(batchJob{path: p, doc: doc, size: inf.Size(), mtime: inf.ModTime()})
-
-				atomic.AddInt64(&totalFiles, 1)
-				atomic.AddInt64(&totalBytes, inf.Size())
-				i.filesProcessed.Add(1)
-				i.bytesProcessed.Add(inf.Size())
-			}(path, info)
-
-			return nil
-		})
-
-		if err != nil {
-			bat.close()
-			return errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, "walk failed", err)
-		}
+	indexedPaths := make(map[string]metastore.FileMeta)
+	if err := i.meta.ForEach(func(path string, meta metastore.FileMeta) error {
+		indexedPaths[path] = meta
+		return nil
+	}); err != nil {
+		return errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, "failed to read metastore", err)
 	}
 
-	wg.Wait()
+	var added, updated, unchanged int64
+	bat := newBatcher(i, defaultBatchSize, defaultBatchInterval)
+	stats := i.walkIndexPaths(bat, func(path string, info os.FileInfo) bool {
+		existing, exists := indexedPaths[path]
+		delete(indexedPaths, path)
+		current := fileMeta(info)
+		switch {
+		case !exists:
+			added++
+			return true
+		case !existing.ModTime.Equal(current.ModTime) || existing.Size != current.Size:
+			updated++
+			return true
+		default:
+			unchanged++
+			return false
+		}
+	})
 	bat.close()
+
+	stale := make([]string, 0, len(indexedPaths))
+	for path := range indexedPaths {
+		stale = append(stale, path)
+	}
+	if err := i.deletePaths(stale); err != nil {
+		log.Warnf("failed to delete stale entries: %v", err)
+	}
 
 	duration := time.Since(start)
 	i.indexComplete.Store(true)
 
-	if err := i.saveStatsDocument(int(totalFiles), totalBytes, duration); err != nil {
-		log.Warnf("failed to save stats: %v", err)
-	}
+	count, _ := i.GetDocCount()
+	i.finishOperation(int(count), stats.bytes, duration)
 
-	if err := i.SaveSchemaVersion(); err != nil {
-		log.Warnf("failed to save schema version: %v", err)
-	}
+	log.Infof("incremental sync complete: +%d new, ~%d updated, -%d deleted, =%d unchanged, took %s",
+		added, updated, len(stale), unchanged, duration)
 
-	log.Infof("reindex complete: %d files, %d bytes, took %s", totalFiles, totalBytes, duration)
 	return nil
 }
 
@@ -1118,22 +1131,14 @@ func (i *Indexer) Stats() *config.IndexStats {
 }
 
 func (i *Indexer) calculateStats() (*config.IndexStats, error) {
-	i.mu.RLock()
-	count, err := i.index.DocCount()
-	i.mu.RUnlock()
-
+	count, err := i.GetDocCount()
 	if err != nil {
 		return nil, err
 	}
 
 	statsDoc, err := i.loadStatsDocument()
 	if err != nil || statsDoc == nil {
-		return &config.IndexStats{
-			TotalFiles:    int(count),
-			TotalBytes:    0,
-			LastIndexTime: time.Time{},
-			IndexDuration: "",
-		}, nil
+		return &config.IndexStats{TotalFiles: int(count)}, nil
 	}
 
 	return statsDoc, nil
@@ -1158,200 +1163,39 @@ type statsMetadata struct {
 }
 
 func (i *Indexer) loadStatsDocument() (*config.IndexStats, error) {
-	req := bleve.NewSearchRequest(bleve.NewDocIDQuery([]string{"__stats__"}))
-	req.Fields = []string{"total_files", "total_bytes", "last_index_time", "index_duration"}
-
-	i.mu.RLock()
-	idx := i.index
-	i.mu.RUnlock()
-
-	result, err := idx.Search(req)
-	if err != nil || len(result.Hits) == 0 {
+	raw, err := i.meta.GetMeta(statsMetaKey)
+	if err != nil || raw == "" {
 		return nil, err
 	}
 
-	hit := result.Hits[0]
-	stats := &config.IndexStats{}
-
-	if totalFiles, ok := hit.Fields["total_files"].(float64); ok {
-		stats.TotalFiles = int(totalFiles)
-	}
-	if totalBytes, ok := hit.Fields["total_bytes"].(float64); ok {
-		stats.TotalBytes = int64(totalBytes)
-	}
-	if duration, ok := hit.Fields["index_duration"].(string); ok {
-		stats.IndexDuration = duration
-	}
-	if lastIndexStr, ok := hit.Fields["last_index_time"].(string); ok {
-		stats.LastIndexTime, _ = time.Parse(time.RFC3339, lastIndexStr)
+	var stats statsMetadata
+	if err := json.Unmarshal([]byte(raw), &stats); err != nil {
+		return nil, err
 	}
 
-	return stats, nil
+	return &config.IndexStats{
+		TotalFiles:    stats.TotalFiles,
+		TotalBytes:    stats.TotalBytes,
+		LastIndexTime: stats.LastIndexTime,
+		IndexDuration: stats.IndexDuration,
+	}, nil
 }
 
 func (i *Indexer) saveStatsDocument(totalFiles int, totalBytes int64, duration time.Duration) error {
-	stats := statsMetadata{
+	raw, err := json.Marshal(statsMetadata{
 		TotalFiles:    totalFiles,
 		TotalBytes:    totalBytes,
 		LastIndexTime: time.Now(),
 		IndexDuration: duration.String(),
+	})
+	if err != nil {
+		return err
 	}
-
-	i.mu.RLock()
-	idx := i.index
-	i.mu.RUnlock()
-
-	return idx.Index("__stats__", stats)
-}
-
-func (i *Indexer) SyncIncremental() error {
-	i.setPhase(PhaseSyncing)
-	defer i.clearPhase()
-
-	start := time.Now()
-	log.Infof("starting incremental sync")
-
-	var added, updated, deleted, unchanged int64
-	var totalBytes int64
-	var pathsMu sync.Mutex
-	var statsMu sync.Mutex
-	semaphore := make(chan struct{}, i.config.WorkerCount)
-	var wg sync.WaitGroup
-
-	indexedPaths := make(map[string]metastore.FileMeta)
-	if err := i.meta.ForEach(func(path string, meta metastore.FileMeta) error {
-		indexedPaths[path] = meta
-		return nil
-	}); err != nil {
-		return errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, "failed to read metastore", err)
-	}
-
-	bat := newBatcher(i, defaultBatchSize, defaultBatchInterval)
-
-	for _, idxPath := range i.config.IndexPaths {
-		err := walkFollowSymlinks(idxPath.Path, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				if os.IsPermission(err) {
-					return nil
-				}
-				return err
-			}
-
-			if info.IsDir() {
-				depth := i.config.GetDepth(path)
-				maxDepth := i.config.GetMaxDepth(path)
-				if maxDepth > 0 && depth >= maxDepth {
-					return filepath.SkipDir
-				}
-				if !i.config.ShouldIndexDir(path) {
-					return filepath.SkipDir
-				}
-
-				pathsMu.Lock()
-				existing, exists := indexedPaths[path]
-				delete(indexedPaths, path)
-				pathsMu.Unlock()
-
-				switch {
-				case !exists:
-					atomic.AddInt64(&added, 1)
-				case !existing.ModTime.Equal(info.ModTime()):
-					atomic.AddInt64(&updated, 1)
-				default:
-					atomic.AddInt64(&unchanged, 1)
-					return nil
-				}
-
-				doc, err := i.buildDocument(path, info)
-				if err != nil {
-					log.Debugf("failed to build directory doc %s: %v", path, err)
-					return nil
-				}
-				bat.submit(batchJob{path: path, doc: doc, mtime: info.ModTime()})
-				return nil
-			}
-
-			if !i.config.ShouldIndexFile(path) {
-				return nil
-			}
-
-			wg.Add(1)
-			go func(p string, inf os.FileInfo) {
-				defer wg.Done()
-				semaphore <- struct{}{}
-				defer func() { <-semaphore }()
-
-				pathsMu.Lock()
-				existing, exists := indexedPaths[p]
-				delete(indexedPaths, p)
-				pathsMu.Unlock()
-
-				switch {
-				case !exists:
-					atomic.AddInt64(&added, 1)
-				case !existing.ModTime.Equal(inf.ModTime()):
-					atomic.AddInt64(&updated, 1)
-				default:
-					atomic.AddInt64(&unchanged, 1)
-					return
-				}
-
-				doc, err := i.buildDocument(p, inf)
-				if err != nil {
-					log.Warnf("failed to build doc %s: %v", p, err)
-					return
-				}
-				bat.submit(batchJob{path: p, doc: doc, size: inf.Size(), mtime: inf.ModTime()})
-
-				statsMu.Lock()
-				totalBytes += inf.Size()
-				statsMu.Unlock()
-				i.filesProcessed.Add(1)
-				i.bytesProcessed.Add(inf.Size())
-			}(path, info)
-
-			return nil
-		})
-
-		if err != nil {
-			bat.close()
-			return errdefs.NewCustomError(errdefs.ErrTypeIndexingFailed, "walk failed", err)
-		}
-	}
-
-	wg.Wait()
-	bat.close()
-
-	for path := range indexedPaths {
-		if err := i.Delete(path); err != nil {
-			log.Debugf("failed to delete %s: %v", path, err)
-			continue
-		}
-		atomic.AddInt64(&deleted, 1)
-	}
-
-	duration := time.Since(start)
-	i.indexComplete.Store(true)
-
-	count, _ := i.index.DocCount()
-	if err := i.saveStatsDocument(int(count), totalBytes, duration); err != nil {
-		log.Warnf("failed to save stats: %v", err)
-	}
-
-	if err := i.SaveSchemaVersion(); err != nil {
-		log.Warnf("failed to save schema version: %v", err)
-	}
-
-	log.Infof("incremental sync complete: +%d new, ~%d updated, -%d deleted, =%d unchanged, took %s",
-		added, updated, deleted, unchanged, duration)
-
-	return nil
+	return i.meta.PutMeta(statsMetaKey, string(raw))
 }
 
 func (i *Indexer) GetDocCount() (uint64, error) {
-	i.mu.RLock()
-	defer i.mu.RUnlock()
-	return i.index.DocCount()
+	return i.currentIndex().DocCount()
 }
 
 type FileEntry struct {
@@ -1388,15 +1232,16 @@ func (i *Indexer) ListFiles(prefix string, limit int) ([]FileEntry, int, error) 
 }
 
 func (i *Indexer) NeedsReindex() bool {
-	val, err := i.meta.GetMeta("schema_version")
-	if err != nil || val == "" {
+	reason, _ := i.RebuildReason()
+	if reason != "" {
 		return true
 	}
-	v, err := strconv.Atoi(val)
-	if err != nil {
-		return true
-	}
-	return v != SchemaVersion
+	v, err := i.CurrentSchemaVersion()
+	return err != nil || v != SchemaVersion
+}
+
+func (i *Indexer) RebuildReason() (string, error) {
+	return i.meta.GetMeta(rebuildReasonKey)
 }
 
 func (i *Indexer) SaveSchemaVersion() error {
@@ -1404,6 +1249,7 @@ func (i *Indexer) SaveSchemaVersion() error {
 }
 
 func (i *Indexer) Close() error {
+	openIndexers.Delete(i.config.IndexPath)
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.meta.Close()
@@ -1429,56 +1275,49 @@ func removeIndexDir(path string) error {
 	return os.RemoveAll(path)
 }
 
-func walkFollowSymlinks(root string, fn filepath.WalkFunc) error {
+func walkFollowSymlinks(root string, fn filepath.WalkFunc) {
 	info, err := os.Stat(root)
 	if err != nil {
 		log.Warnf("skipping inaccessible root %s: %v", root, err)
-		return nil
+		return
 	}
-	return symWalk(root, info, fn, make(map[string]bool))
+	symWalk(root, info, fn, make(map[string]bool))
 }
 
-func symWalk(path string, info os.FileInfo, fn filepath.WalkFunc, visited map[string]bool) error {
+func symWalk(path string, info os.FileInfo, fn filepath.WalkFunc, visited map[string]bool) {
 	if !info.IsDir() {
-		return fn(path, info, nil)
+		_ = fn(path, info, nil)
+		return
 	}
 
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
-		return fn(path, info, err)
+		_ = fn(path, info, err)
+		return
 	}
 
 	if visited[resolved] {
-		return nil
+		return
 	}
 	visited[resolved] = true
 
 	if err := fn(path, info, nil); err != nil {
-		if err == filepath.SkipDir {
-			return nil
-		}
-		return err
+		return
 	}
 
 	entries, err := os.ReadDir(path)
 	if err != nil {
-		return fn(path, info, err)
+		_ = fn(path, info, err)
+		return
 	}
 
 	for _, e := range entries {
 		child := filepath.Join(path, e.Name())
 		childInfo, err := os.Stat(child)
 		if err != nil {
-			log.Warnf("skipping inaccessible path %s: %v", child, err)
+			log.Debugf("skipping inaccessible path %s: %v", child, err)
 			continue
 		}
-		if err := symWalk(child, childInfo, fn, visited); err != nil {
-			if childInfo.IsDir() && err == filepath.SkipDir {
-				continue
-			}
-			return err
-		}
+		symWalk(child, childInfo, fn, visited)
 	}
-
-	return nil
 }

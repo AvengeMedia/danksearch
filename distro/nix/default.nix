@@ -40,6 +40,7 @@ in
         ExecStart = "${getExe cfg.package} serve";
         Restart = "on-failure";
         RestartSec = "5s";
+        TimeoutStopSec = "30s";
 
         StandardOutput = "journal";
         StandardError = "journal";

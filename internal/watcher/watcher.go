@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/AvengeMedia/dankgo/log"
 	"github.com/AvengeMedia/danksearch/internal/config"
@@ -11,66 +12,74 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
+const (
+	defaultDebounce = 750 * time.Millisecond
+	maxDebounceWait = 10 * time.Second
+	stallWarnAfter  = 30 * time.Second
+)
+
+type pendingIndex struct {
+	timer *time.Timer
+	since time.Time
+}
+
 type Indexer interface {
 	Index(path string) error
 	Delete(path string) error
 }
 
 type Watcher struct {
-	watcher *fsnotify.Watcher
-	indexer Indexer
-	config  *config.Config
-	running bool
+	indexer  Indexer
+	config   *config.Config
+	debounce time.Duration
+	workers  chan struct{}
+
 	mu      sync.Mutex
+	watcher *fsnotify.Watcher
+	running bool
 	done    chan struct{}
+	pending map[string]*pendingIndex
 }
 
-func New(indexer Indexer, cfg *config.Config) (*Watcher, error) {
-	w, err := fsnotify.NewWatcher()
-	if err != nil {
-		return nil, errdefs.NewCustomError(errdefs.ErrTypeWatcherFailed, "failed to create watcher", err)
-	}
-
+func New(indexer Indexer, cfg *config.Config) *Watcher {
 	return &Watcher{
-		watcher: w,
-		indexer: indexer,
-		config:  cfg,
-		done:    make(chan struct{}),
-	}, nil
+		indexer:  indexer,
+		config:   cfg,
+		debounce: defaultDebounce,
+		workers:  make(chan struct{}, max(cfg.WorkerCount, 1)),
+		pending:  make(map[string]*pendingIndex),
+	}
 }
 
 func (w *Watcher) Start() error {
 	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	if w.running {
-		w.mu.Unlock()
 		return nil
 	}
 
-	// Create a new watcher if the previous one was closed
-	if w.watcher == nil {
-		newWatcher, err := fsnotify.NewWatcher()
-		if err != nil {
-			w.mu.Unlock()
-			return errdefs.NewCustomError(errdefs.ErrTypeWatcherFailed, "failed to create watcher", err)
-		}
-		w.watcher = newWatcher
-		w.done = make(chan struct{})
+	fw, err := fsnotify.NewWatcher()
+	if err != nil {
+		return errdefs.NewCustomError(errdefs.ErrTypeWatcherFailed, "failed to create watcher", err)
 	}
-
-	w.running = true
-	w.mu.Unlock()
 
 	for _, idxPath := range w.config.IndexPaths {
 		if !idxPath.ShouldWatch() {
 			log.Infof("skipping watch for %s (watch disabled)", idxPath.Path)
 			continue
 		}
-		if err := w.addWatches(idxPath.Path); err != nil {
-			return err
+		if err := w.addWatches(fw, idxPath.Path); err != nil {
+			fw.Close()
+			return errdefs.NewCustomError(errdefs.ErrTypeWatcherFailed, "failed to add watches", err)
 		}
 	}
 
-	go w.eventLoop()
+	w.watcher = fw
+	w.done = make(chan struct{})
+	w.running = true
+
+	go w.eventLoop(fw, w.done)
 	log.Infof("watcher started")
 	return nil
 }
@@ -85,8 +94,12 @@ func (w *Watcher) Stop() error {
 
 	w.running = false
 	close(w.done)
+	for path, p := range w.pending {
+		p.timer.Stop()
+		delete(w.pending, path)
+	}
 	err := w.watcher.Close()
-	w.watcher = nil // Allow recreation on next Start()
+	w.watcher = nil
 	log.Infof("watcher stopped")
 	return err
 }
@@ -97,34 +110,36 @@ func (w *Watcher) IsRunning() bool {
 	return w.running
 }
 
-func (w *Watcher) addWatches(root string) error {
+func (w *Watcher) watchableDir(path string) bool {
+	if !w.config.ShouldIndexDir(path) {
+		return false
+	}
+	maxDepth := w.config.GetMaxDepth(path)
+	return maxDepth <= 0 || w.config.GetDepth(path) < maxDepth
+}
+
+func (w *Watcher) addWatches(fw *fsnotify.Watcher, root string) error {
 	watchCount := 0
 	errorCount := 0
 
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			if os.IsPermission(err) {
-				log.Debugf("permission denied: %s", path)
-				return nil
+			log.Debugf("skipping %s: %v", path, err)
+			if info != nil && info.IsDir() {
+				return filepath.SkipDir
 			}
-			return err
+			return nil
 		}
 
 		if !info.IsDir() {
 			return nil
 		}
 
-		if !w.config.ShouldIndexDir(path) {
+		if !w.watchableDir(path) {
 			return filepath.SkipDir
 		}
 
-		depth := w.config.GetDepth(path)
-		maxDepth := w.config.GetMaxDepth(path)
-		if maxDepth > 0 && depth >= maxDepth {
-			return filepath.SkipDir
-		}
-
-		if err := w.watcher.Add(path); err != nil {
+		if err := fw.Add(path); err != nil {
 			errorCount++
 			if errorCount == 1 {
 				log.Warnf("failed to add watch for %s: %v", path, err)
@@ -140,31 +155,23 @@ func (w *Watcher) addWatches(root string) error {
 		log.Warnf("failed to add %d watches (added %d successfully)", errorCount, watchCount)
 		log.Infof("if you hit inotify limits, increase with: sudo sysctl fs.inotify.max_user_watches=524288")
 	} else {
-		log.Infof("added %d directory watches", watchCount)
+		log.Infof("added %d directory watches under %s", watchCount, root)
 	}
 
 	return err
 }
 
-func (w *Watcher) eventLoop() {
-	w.mu.Lock()
-	watcher := w.watcher
-	w.mu.Unlock()
-
-	if watcher == nil {
-		return
-	}
-
+func (w *Watcher) eventLoop(fw *fsnotify.Watcher, done <-chan struct{}) {
 	for {
 		select {
-		case <-w.done:
+		case <-done:
 			return
-		case event, ok := <-watcher.Events:
+		case event, ok := <-fw.Events:
 			if !ok {
 				return
 			}
-			w.handleEvent(event)
-		case err, ok := <-watcher.Errors:
+			w.handleEvent(fw, event)
+		case err, ok := <-fw.Errors:
 			if !ok {
 				return
 			}
@@ -173,52 +180,106 @@ func (w *Watcher) eventLoop() {
 	}
 }
 
-func (w *Watcher) handleEvent(event fsnotify.Event) {
+func (w *Watcher) handleEvent(fw *fsnotify.Watcher, event fsnotify.Event) {
 	path := event.Name
 
-	if event.Op&fsnotify.Create == fsnotify.Create {
-		info, err := os.Stat(path)
-		if err == nil && info.IsDir() {
-			if !w.config.ShouldIndexDir(path) {
-				return
-			}
-
-			depth := w.config.GetDepth(path)
-			maxDepth := w.config.GetMaxDepth(path)
-			if maxDepth > 0 && depth >= maxDepth {
-				return
-			}
-
-			if err := w.watcher.Add(path); err != nil {
-				log.Debugf("failed to watch new dir %s: %v", path, err)
-			}
-			return
-		}
-
-		if w.config.ShouldIndexFile(path) {
-			if err := w.indexer.Index(path); err != nil {
-				log.Debugf("failed to index %s: %v", path, err)
-			}
-		}
-	}
-
-	if event.Op&fsnotify.Write == fsnotify.Write {
-		if w.config.ShouldIndexFile(path) {
-			if err := w.indexer.Index(path); err != nil {
-				log.Debugf("failed to reindex %s: %v", path, err)
-			}
-		}
-	}
-
-	if event.Op&fsnotify.Remove == fsnotify.Remove {
+	switch {
+	case event.Has(fsnotify.Remove), event.Has(fsnotify.Rename):
+		w.cancelPending(path)
 		if err := w.indexer.Delete(path); err != nil {
 			log.Debugf("failed to delete %s: %v", path, err)
 		}
+	case event.Has(fsnotify.Create):
+		w.handleCreate(fw, path)
+	case event.Has(fsnotify.Write):
+		w.scheduleIndex(path)
+	}
+}
+
+func (w *Watcher) handleCreate(fw *fsnotify.Watcher, path string) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	if !info.IsDir() {
+		w.scheduleIndex(path)
+		return
+	}
+	if !w.watchableDir(path) {
+		return
 	}
 
-	if event.Op&fsnotify.Rename == fsnotify.Rename {
-		if err := w.indexer.Delete(path); err != nil {
-			log.Debugf("failed to delete renamed file %s: %v", path, err)
+	if err := w.addWatches(fw, path); err != nil {
+		log.Debugf("failed to watch new dir %s: %v", path, err)
+	}
+	w.indexTree(path)
+}
+
+func (w *Watcher) indexTree(root string) {
+	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
 		}
+		if info.IsDir() && path != root && !w.watchableDir(path) {
+			return filepath.SkipDir
+		}
+		w.scheduleIndex(path)
+		return nil
+	})
+}
+
+func (w *Watcher) scheduleIndex(path string) {
+	if !w.config.ShouldIndexFile(path) {
+		return
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if !w.running {
+		return
+	}
+	if p, ok := w.pending[path]; ok {
+		if time.Since(p.since) < maxDebounceWait {
+			p.timer.Reset(w.debounce)
+		}
+		return
+	}
+	w.pending[path] = &pendingIndex{
+		timer: time.AfterFunc(w.debounce, func() { w.indexNow(path) }),
+		since: time.Now(),
+	}
+}
+
+func (w *Watcher) cancelPending(path string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	p, ok := w.pending[path]
+	if !ok {
+		return
+	}
+	p.timer.Stop()
+	delete(w.pending, path)
+}
+
+func (w *Watcher) indexNow(path string) {
+	w.mu.Lock()
+	delete(w.pending, path)
+	running := w.running
+	w.mu.Unlock()
+	if !running {
+		return
+	}
+
+	w.workers <- struct{}{}
+	defer func() { <-w.workers }()
+
+	start := time.Now()
+	if err := w.indexer.Index(path); err != nil {
+		log.Debugf("failed to index %s: %v", path, err)
+	}
+	if elapsed := time.Since(start); elapsed > stallWarnAfter {
+		log.Warnf("indexing %s took %s, index updates may be stalled", path, elapsed.Round(time.Second))
 	}
 }

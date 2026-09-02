@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	bolt "go.etcd.io/bbolt"
+	berrors "go.etcd.io/bbolt/errors"
 )
 
 // zero padding in a fresh db, never a valid page
@@ -95,4 +96,50 @@ func TestUpdate_CorruptDBReturnsErrorNotPanic(t *testing.T) {
 			assert.Error(t, err)
 		})
 	}
+}
+
+func TestNew_LockedDBIsNotTreatedAsCorrupt(t *testing.T) {
+	dir := t.TempDir()
+	indexPath := filepath.Join(dir, "index")
+	holder, err := New(indexPath)
+	require.NoError(t, err)
+	defer holder.Close()
+	require.NoError(t, holder.Put("kept", FileMeta{Size: 1}))
+
+	_, err = New(indexPath)
+	require.ErrorIs(t, err, berrors.ErrTimeout)
+
+	_, statErr := os.Stat(filepath.Join(dir, "meta.db.corrupt"))
+	assert.True(t, os.IsNotExist(statErr))
+	_, found, err := holder.Get("kept")
+	require.NoError(t, err)
+	assert.True(t, found)
+}
+
+func TestBatchOperations(t *testing.T) {
+	s, err := New(filepath.Join(t.TempDir(), "index"))
+	require.NoError(t, err)
+	defer s.Close()
+
+	require.NoError(t, s.PutBatch(map[string]FileMeta{
+		"/a": {ModTime: time.Unix(1, 0), Size: 1},
+		"/b": {ModTime: time.Unix(2, 0), Size: 2},
+		"/c": {ModTime: time.Unix(3, 0), Size: 3},
+	}))
+	count, err := s.Count()
+	require.NoError(t, err)
+	assert.Equal(t, 3, count)
+
+	require.NoError(t, s.DeleteBatch([]string{"/a", "/c", "/missing"}))
+	count, err = s.Count()
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+
+	meta, found, err := s.Get("/b")
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, int64(2), meta.Size)
+
+	require.NoError(t, s.PutBatch(nil))
+	require.NoError(t, s.DeleteBatch(nil))
 }

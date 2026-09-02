@@ -9,6 +9,7 @@ import (
 
 	"github.com/AvengeMedia/dankgo/ipc"
 	"github.com/AvengeMedia/danksearch/internal/config"
+	"github.com/AvengeMedia/danksearch/internal/indexer"
 	mocks_net "github.com/AvengeMedia/danksearch/internal/mocks/net"
 	mocks_server "github.com/AvengeMedia/danksearch/internal/mocks/server"
 	bleve "github.com/blevesearch/bleve/v2"
@@ -118,6 +119,7 @@ func (s *RouterSuite) TestWatchStatus() {
 }
 
 func (s *RouterSuite) TestReindex() {
+	s.indexer.EXPECT().Stats().Return(&config.IndexStats{Phase: indexer.PhaseIdle}).Once()
 	s.indexer.EXPECT().ReindexAll().Return(nil).Maybe()
 
 	out := s.route(ipc.Request{ID: 7, Method: "reindex"})
@@ -127,6 +129,18 @@ func (s *RouterSuite) TestReindex() {
 	s.Require().NoError(json.Unmarshal(out, &resp))
 	s.Require().NotNil(resp.Result)
 	s.Equal("reindexing started", (*resp.Result)["status"])
+}
+
+func (s *RouterSuite) TestReindexRejectedWhileBusy() {
+	s.indexer.EXPECT().Stats().Return(&config.IndexStats{Phase: indexer.PhaseSyncing}).Twice()
+
+	for _, method := range []string{"reindex", "sync"} {
+		out := s.route(ipc.Request{ID: 9, Method: method})
+
+		var resp ipc.Response[any]
+		s.Require().NoError(json.Unmarshal(out, &resp))
+		s.Contains(resp.Error, "already in progress")
+	}
 }
 
 func (s *RouterSuite) TestUnknownMethod() {

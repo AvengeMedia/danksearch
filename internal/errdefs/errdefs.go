@@ -10,6 +10,7 @@ const (
 	ErrTypeWatcherFailed
 	ErrTypeInvalidConfig
 	ErrTypeFileAccessDenied
+	ErrTypeIndexBusy
 )
 
 type CustomError struct {
@@ -36,13 +37,3 @@ func NewCustomError(errType ErrorType, message string, err error) error {
 		Err:     err,
 	}
 }
-
-var (
-	ErrIndexNotFound    = &CustomError{Type: ErrTypeIndexNotFound, Message: "index not found"}
-	ErrIndexCorrupted   = &CustomError{Type: ErrTypeIndexCorrupted, Message: "index corrupted"}
-	ErrIndexingFailed   = &CustomError{Type: ErrTypeIndexingFailed, Message: "indexing failed"}
-	ErrSearchFailed     = &CustomError{Type: ErrTypeSearchFailed, Message: "search failed"}
-	ErrWatcherFailed    = &CustomError{Type: ErrTypeWatcherFailed, Message: "watcher failed"}
-	ErrInvalidConfig    = &CustomError{Type: ErrTypeInvalidConfig, Message: "invalid config"}
-	ErrFileAccessDenied = &CustomError{Type: ErrTypeFileAccessDenied, Message: "file access denied"}
-)

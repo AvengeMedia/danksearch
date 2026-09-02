@@ -36,7 +36,7 @@ A configurable filesystem search service powered by [bleve](https://github.com/b
 
 ## Installation
 
-Requires [Go](https://go.dev) 1.24+
+Requires [Go](https://go.dev) 1.26+
 
 ```bash
 make && sudo make install && make install-service

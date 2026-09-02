@@ -54,8 +54,7 @@ func (s *ExifSuite) TestExifExtraction() {
 	info, err := os.Stat(testFile)
 	s.Require().NoError(err)
 
-	doc, err := idx.readDocument(testFile, info)
-	s.Require().NoError(err)
+	doc := idx.readDocument(testFile, info)
 	s.Equal("image/jpeg", doc.ContentType)
 }
 

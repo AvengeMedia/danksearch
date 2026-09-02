@@ -316,10 +316,68 @@ func (s *ConfigSuite) TestExpandPathsInConfig() {
 			{Path: "/absolute/path"},
 		},
 	}
-	cfg.expandPaths()
+	cfg.ExpandPaths()
 
 	s.Equal(filepath.Join(home, "index"), cfg.IndexPath)
 	s.Equal(filepath.Join(home, "Documents"), cfg.IndexPaths[0].Path)
 	s.Equal(filepath.Join(home, "Pictures"), cfg.IndexPaths[1].Path)
 	s.Equal("/absolute/path", cfg.IndexPaths[2].Path)
+}
+
+func (s *ConfigSuite) TestIndexPathBoundary() {
+	cfg := &Config{IndexPaths: []IndexPath{
+		{Path: "/home/u/Doc"},
+		{Path: "/home/u/Documents/work"},
+	}}
+	cfg.BuildMaps()
+
+	s.Nil(cfg.FindIndexPath("/home/u/Documents"))
+	s.Nil(cfg.FindIndexPath("/home/u/Documents/file.txt"))
+	s.Equal("/home/u/Doc", cfg.FindIndexPath("/home/u/Doc").Path)
+	s.Equal("/home/u/Doc", cfg.FindIndexPath("/home/u/Doc/x").Path)
+	s.Equal("/home/u/Documents/work", cfg.FindIndexPath("/home/u/Documents/work/a").Path)
+
+	root := &Config{IndexPaths: []IndexPath{{Path: "/"}}}
+	root.BuildMaps()
+	s.NotNil(root.FindIndexPath("/etc/hosts"))
+}
+
+func (s *ConfigSuite) TestTextExtensionsAreCaseInsensitive() {
+	cfg := &Config{TextExts: []string{".MD", ".go"}}
+	cfg.BuildMaps()
+
+	s.True(cfg.IsTextFile("/x/README.md"))
+	s.True(cfg.IsTextFile("/x/README.MD"))
+	s.True(cfg.IsTextFile("/x/main.GO"))
+	s.False(cfg.IsTextFile("/x/photo.jpg"))
+}
+
+func (s *ConfigSuite) TestDepthAndHiddenDetection() {
+	cfg := &Config{IndexAllFiles: true, IndexPaths: []IndexPath{{Path: "/root", ExcludeHidden: true}}}
+	cfg.BuildMaps()
+
+	s.Equal(0, cfg.GetDepth("/root"))
+	s.Equal(1, cfg.GetDepth("/root/a"))
+	s.Equal(3, cfg.GetDepth("/root/a/b/c"))
+	s.True(cfg.ShouldIndexDir("/root/a/b"))
+	s.False(cfg.ShouldIndexDir("/root/a/.hidden/b"))
+	s.False(cfg.ShouldIndexFile("/root/.env"))
+	s.True(cfg.ShouldIndexFile("/root/a:b/file"))
+}
+
+func (s *ConfigSuite) TestOwnIndexDataIsNeverIndexed() {
+	cfg := &Config{
+		IndexAllFiles: true,
+		IndexPath:     "/home/u/.cache/danksearch/index",
+		IndexPaths:    []IndexPath{{Path: "/home/u"}},
+	}
+	cfg.BuildMaps()
+
+	s.False(cfg.ShouldIndexDir("/home/u/.cache/danksearch/index"))
+	s.False(cfg.ShouldIndexDir("/home/u/.cache/danksearch/index/store"))
+	s.False(cfg.ShouldIndexFile("/home/u/.cache/danksearch/meta.db"))
+	s.False(cfg.ShouldIndexFile("/home/u/.cache/danksearch/meta.db.corrupt"))
+	s.Equal("dsearch index data", cfg.ExclusionReason("/home/u/.cache/danksearch/meta.db"))
+	s.True(cfg.ShouldIndexDir("/home/u/.cache/danksearch"))
+	s.True(cfg.ShouldIndexFile("/home/u/.cache/other/file"))
 }

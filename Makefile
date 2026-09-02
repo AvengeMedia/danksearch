@@ -70,7 +70,7 @@ dev:
 
 check-go:
 	@echo "Checking Go version..."
-	@go version | grep -E "go1\.(2[2-9]|[3-9][0-9])" > /dev/null || (echo "ERROR: Go 1.22 or higher required" && exit 1)
+	@go version | grep -E "go1\.(2[6-9]|[3-9][0-9])" > /dev/null || (echo "ERROR: Go 1.26 or higher required" && exit 1)
 	@echo "Go version OK"
 
 version: check-go

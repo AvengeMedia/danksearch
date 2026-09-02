@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/pprof"
 	"strings"
 	"time"
 
@@ -253,9 +254,6 @@ func buildConfig() *config.Config {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
-	if rootDir != "" {
-		cfg.RootDir = rootDir
-	}
 	if indexPath != "" {
 		cfg.IndexPath = indexPath
 	}
@@ -268,25 +266,42 @@ func buildConfig() *config.Config {
 	if workerCount > 0 {
 		cfg.WorkerCount = workerCount
 	}
-	if maxDepth >= 0 {
-		cfg.MaxDepth = maxDepth
-	}
-
-	if cmd := rootCmd.Flags().Lookup("exclude-hidden"); cmd != nil && cmd.Changed {
-		cfg.ExcludeHidden = excludeHidden
-	}
-
+	cfg.BuildMaps()
 	return cfg
+}
+
+func applyIndexPathOverrides(cmd *cobra.Command, cfg *config.Config) {
+	excludeHiddenSet := cmd.Flags().Changed("exclude-hidden")
+
+	if rootDir != "" {
+		cfg.IndexPaths = []config.IndexPath{{
+			Path:        rootDir,
+			ExcludeDirs: config.DefaultExcludeDirs(),
+		}}
+	}
+
+	for idx := range cfg.IndexPaths {
+		if maxDepth >= 0 {
+			cfg.IndexPaths[idx].MaxDepth = maxDepth
+		}
+		if excludeHiddenSet {
+			cfg.IndexPaths[idx].ExcludeHidden = excludeHidden
+		}
+	}
+
+	cfg.ExpandPaths()
+	cfg.BuildMaps()
 }
 
 func runServe(cmd *cobra.Command, args []string) error {
 	cfg := buildConfig()
+	applyIndexPathOverrides(cmd, cfg)
 
 	idx, err := indexer.New(cfg)
 	if err != nil {
 		return err
 	}
-	defer idx.Close()
+	defer closeIndexOrGiveUp(idx, indexCloseTimeout)
 
 	count, err := idx.GetDocCount()
 	if err != nil {
@@ -295,7 +310,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	if count == 0 || idx.NeedsReindex() {
 		reason := "empty index"
-		if count > 0 {
+		switch rebuild, _ := idx.RebuildReason(); {
+		case rebuild != "":
+			reason = "previous run reported: " + rebuild
+		case count > 0:
 			reason = "schema upgrade"
 		}
 		log.Infof("index requires rebuild (%s), reindexing...", reason)
@@ -308,10 +326,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}()
 	}
 
-	w, err := watcher.New(idx, cfg)
-	if err != nil {
-		return err
-	}
+	w := watcher.New(idx, cfg)
 
 	if !noWatch {
 		if err := w.Start(); err != nil {
@@ -324,7 +339,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("cannot specify both --http and --socket flags")
 	}
 
-	var runners []app.Runner
+	runners := []app.Runner{app.RunnerFunc(func(ctx context.Context) error {
+		select {
+		case <-ctx.Done():
+			return nil
+		case err := <-idx.Fatal():
+			return err
+		}
+	})}
 
 	if !socketOnly {
 		runners = append(runners, server.NewHTTP(cfg.ListenAddr, idx, w))
@@ -347,6 +369,23 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	return serveErr
+}
+
+const indexCloseTimeout = 15 * time.Second
+
+func closeIndexOrGiveUp(idx *indexer.Indexer, timeout time.Duration) {
+	done := make(chan error, 1)
+	go func() { done <- idx.Close() }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			log.Errorf("failed to close index: %v", err)
+		}
+	case <-time.After(timeout):
+		log.Errorf("index close did not finish within %s, exiting anyway", timeout)
+		_ = pprof.Lookup("goroutine").WriteTo(os.Stderr, 1)
+	}
 }
 
 func runSearch(cmd *cobra.Command, args []string) error {
@@ -647,7 +686,7 @@ func runIndexDirs(cmd *cobra.Command, args []string) error {
 			watch = "off"
 		}
 		exif := "off"
-		if ip.ExtractExif {
+		if ip.ShouldExtractExif() {
 			exif = "on"
 		}
 		fmt.Printf("%s (depth: %s, hidden: %s, watch: %s, exif: %s)\n",

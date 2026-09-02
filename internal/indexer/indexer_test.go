@@ -231,8 +231,7 @@ func (s *IndexerSuite) TestReadDocument() {
 	info, err := os.Stat(testFile)
 	s.Require().NoError(err)
 
-	doc, err := idx.readDocument(testFile, info)
-	s.Require().NoError(err)
+	doc := idx.readDocument(testFile, info)
 	s.Equal(testFile, doc.Path)
 	s.Equal("test.go", doc.Filename)
 	s.Equal(content, doc.Body)

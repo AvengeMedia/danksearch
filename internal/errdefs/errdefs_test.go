@@ -61,29 +61,3 @@ func (s *ErrdefsSuite) TestNewCustomError() {
 	s.Equal("test message", customErr.Message)
 	s.Equal(wrappedErr, customErr.Err)
 }
-
-func (s *ErrdefsSuite) TestPredefinedErrors() {
-	tests := []struct {
-		name    string
-		err     error
-		errType ErrorType
-		message string
-	}{
-		{"ErrIndexNotFound", ErrIndexNotFound, ErrTypeIndexNotFound, "index not found"},
-		{"ErrIndexCorrupted", ErrIndexCorrupted, ErrTypeIndexCorrupted, "index corrupted"},
-		{"ErrIndexingFailed", ErrIndexingFailed, ErrTypeIndexingFailed, "indexing failed"},
-		{"ErrSearchFailed", ErrSearchFailed, ErrTypeSearchFailed, "search failed"},
-		{"ErrWatcherFailed", ErrWatcherFailed, ErrTypeWatcherFailed, "watcher failed"},
-		{"ErrInvalidConfig", ErrInvalidConfig, ErrTypeInvalidConfig, "invalid config"},
-		{"ErrFileAccessDenied", ErrFileAccessDenied, ErrTypeFileAccessDenied, "file access denied"},
-	}
-
-	for _, tt := range tests {
-		s.Run(tt.name, func() {
-			customErr, ok := tt.err.(*CustomError)
-			s.Require().True(ok)
-			s.Equal(tt.errType, customErr.Type)
-			s.Equal(tt.message, customErr.Message)
-		})
-	}
-}

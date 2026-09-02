@@ -13,13 +13,6 @@ packages:
     interfaces:
       IndexerInterface: {}
       WatcherInterface: {}
-  github.com/AvengeMedia/danksearch/internal/handlers:
-    config:
-      dir: internal/mocks/handlers
-      pkgname: mocks_handlers
-    interfaces:
-      IndexerInterface: {}
-      WatcherInterface: {}
   github.com/AvengeMedia/danksearch/internal/server:
     config:
       dir: internal/mocks/server

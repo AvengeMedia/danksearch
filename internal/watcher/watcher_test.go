@@ -36,6 +36,23 @@ type WatcherSuite struct {
 	suite.Suite
 }
 
+func newTestWatcher(idx Indexer, cfg *config.Config) *Watcher {
+	w := New(idx, cfg)
+	w.debounce = 20 * time.Millisecond
+	return w
+}
+
+func testConfig(root string) *config.Config {
+	cfg := config.Default()
+	cfg.IndexPaths = []config.IndexPath{{Path: root, MaxDepth: 10}}
+	cfg.BuildMaps()
+	return cfg
+}
+
+func (s *WatcherSuite) eventually(cond func() bool) {
+	s.Eventually(cond, 2*time.Second, 10*time.Millisecond)
+}
+
 func TestWatcherSuite(t *testing.T) {
 	suite.Run(t, new(WatcherSuite))
 }
@@ -44,9 +61,8 @@ func (s *WatcherSuite) TestNew() {
 	cfg := config.Default()
 	idx := newCountingIndexer(s.T())
 
-	w, err := New(idx, cfg)
-	s.Require().NoError(err)
-	s.NotNil(w.watcher)
+	w := New(idx, cfg)
+	s.Nil(w.watcher)
 	s.Equal(idx, w.indexer)
 	s.Equal(cfg, w.config)
 }
@@ -64,8 +80,7 @@ func (s *WatcherSuite) TestStartStop() {
 	}
 	cfg.BuildMaps()
 
-	w, err := New(newCountingIndexer(s.T()), cfg)
-	s.Require().NoError(err)
+	w := New(newCountingIndexer(s.T()), cfg)
 
 	s.False(w.IsRunning())
 
@@ -92,23 +107,104 @@ func (s *WatcherSuite) TestFileEvents() {
 	cfg.BuildMaps()
 	idx := newCountingIndexer(s.T())
 
-	w, err := New(idx, cfg)
-	s.Require().NoError(err)
+	w := newTestWatcher(idx, cfg)
 	s.Require().NoError(w.Start())
 	defer w.Stop()
 
 	testFile := filepath.Join(tmpDir, "test.txt")
 	s.Require().NoError(os.WriteFile(testFile, []byte("hello"), 0644))
-	time.Sleep(100 * time.Millisecond)
-	s.NotZero(idx.indexed.Load())
+	s.eventually(func() bool { return idx.indexed.Load() == 1 })
 
 	s.Require().NoError(os.WriteFile(testFile, []byte("world"), 0644))
-	time.Sleep(100 * time.Millisecond)
-	s.GreaterOrEqual(idx.indexed.Load(), int64(2))
+	s.eventually(func() bool { return idx.indexed.Load() == 2 })
 
 	s.Require().NoError(os.Remove(testFile))
-	time.Sleep(100 * time.Millisecond)
-	s.NotZero(idx.deleted.Load())
+	s.eventually(func() bool { return idx.deleted.Load() == 1 })
+}
+
+func (s *WatcherSuite) TestBurstOfWritesIndexesOnce() {
+	tmpDir := s.T().TempDir()
+	idx := newCountingIndexer(s.T())
+
+	w := newTestWatcher(idx, testConfig(tmpDir))
+	w.debounce = 150 * time.Millisecond
+	s.Require().NoError(w.Start())
+	defer w.Stop()
+
+	testFile := filepath.Join(tmpDir, "download.bin")
+	f, err := os.Create(testFile)
+	s.Require().NoError(err)
+	for range 50 {
+		_, err := f.Write([]byte("chunk"))
+		s.Require().NoError(err)
+		time.Sleep(2 * time.Millisecond)
+	}
+	s.Require().NoError(f.Close())
+
+	s.eventually(func() bool { return idx.indexed.Load() == 1 })
+	time.Sleep(300 * time.Millisecond)
+	s.Equal(int64(1), idx.indexed.Load())
+}
+
+func (s *WatcherSuite) TestRemoveCancelsPendingIndex() {
+	tmpDir := s.T().TempDir()
+	idx := newCountingIndexer(s.T())
+
+	w := newTestWatcher(idx, testConfig(tmpDir))
+	w.debounce = 200 * time.Millisecond
+	s.Require().NoError(w.Start())
+	defer w.Stop()
+
+	testFile := filepath.Join(tmpDir, "temp.txt")
+	s.Require().NoError(os.WriteFile(testFile, []byte("x"), 0644))
+	s.Require().NoError(os.Remove(testFile))
+
+	s.eventually(func() bool { return idx.deleted.Load() == 1 })
+	time.Sleep(300 * time.Millisecond)
+	s.Zero(idx.indexed.Load())
+}
+
+func (s *WatcherSuite) TestNewDirectoryIsWatchedAndIndexed() {
+	tmpDir := s.T().TempDir()
+	idx := newCountingIndexer(s.T())
+
+	w := newTestWatcher(idx, testConfig(tmpDir))
+	s.Require().NoError(w.Start())
+	defer w.Stop()
+
+	staging := filepath.Join(s.T().TempDir(), "tree")
+	s.Require().NoError(os.MkdirAll(filepath.Join(staging, "sub"), 0755))
+	s.Require().NoError(os.WriteFile(filepath.Join(staging, "a.txt"), []byte("a"), 0644))
+	s.Require().NoError(os.WriteFile(filepath.Join(staging, "sub", "b.txt"), []byte("b"), 0644))
+
+	moved := filepath.Join(tmpDir, "tree")
+	s.Require().NoError(os.Rename(staging, moved))
+	s.eventually(func() bool { return idx.indexed.Load() == 4 })
+
+	s.Require().NoError(os.WriteFile(filepath.Join(moved, "sub", "c.txt"), []byte("c"), 0644))
+	s.eventually(func() bool { return idx.indexed.Load() == 5 })
+}
+
+func (s *WatcherSuite) TestStopDropsPendingWork() {
+	tmpDir := s.T().TempDir()
+	idx := newCountingIndexer(s.T())
+
+	w := newTestWatcher(idx, testConfig(tmpDir))
+	w.debounce = 200 * time.Millisecond
+	s.Require().NoError(w.Start())
+
+	s.Require().NoError(os.WriteFile(filepath.Join(tmpDir, "late.txt"), []byte("x"), 0644))
+	s.eventually(func() bool {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		return len(w.pending) == 1
+	})
+	s.Require().NoError(w.Stop())
+
+	time.Sleep(300 * time.Millisecond)
+	s.Zero(idx.indexed.Load())
+	s.Require().NoError(w.Start())
+	s.Require().NoError(w.Stop())
 }
 
 func (s *WatcherSuite) TestExcludedDirs() {
@@ -128,8 +224,7 @@ func (s *WatcherSuite) TestExcludedDirs() {
 	excludedDir := filepath.Join(tmpDir, ".git")
 	s.Require().NoError(os.Mkdir(excludedDir, 0755))
 
-	w, err := New(idx, cfg)
-	s.Require().NoError(err)
+	w := newTestWatcher(idx, cfg)
 	s.Require().NoError(w.Start())
 	defer w.Stop()
 

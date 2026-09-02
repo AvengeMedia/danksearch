@@ -30,6 +30,11 @@ type Server struct {
 	Watcher WatcherInterface
 }
 
+func (s *Server) busy() bool {
+	stats := s.Indexer.Stats()
+	return stats != nil && stats.Phase != "" && stats.Phase != indexer.PhaseIdle
+}
+
 type SearchInput struct {
 	Query           string   `query:"q" minLength:"1" doc:"Search query" example:"mountain"`
 	Limit           int      `query:"limit" default:"10" minimum:"1" maximum:"500" doc:"Maximum results"`
@@ -153,6 +158,9 @@ func RegisterHandlers(srv *Server, api huma.API) {
 		Path:        "/reindex",
 		Tags:        []string{"Index"},
 	}, func(ctx context.Context, input *struct{}) (*ReindexOutput, error) {
+		if srv.busy() {
+			return nil, huma.Error409Conflict("index operation already in progress")
+		}
 		go func() {
 			if err := srv.Indexer.ReindexAll(); err != nil {
 				log.Errorf("reindex failed: %v", err)
@@ -176,6 +184,9 @@ func RegisterHandlers(srv *Server, api huma.API) {
 		Path:        "/sync",
 		Tags:        []string{"Index"},
 	}, func(ctx context.Context, input *struct{}) (*ReindexOutput, error) {
+		if srv.busy() {
+			return nil, huma.Error409Conflict("index operation already in progress")
+		}
 		go func() {
 			if err := srv.Indexer.SyncIncremental(); err != nil {
 				log.Errorf("sync failed: %v", err)

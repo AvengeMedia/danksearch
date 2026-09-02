@@ -13,10 +13,9 @@ const (
 )
 
 type batchJob struct {
-	path  string
-	doc   *Document
-	size  int64
-	mtime time.Time
+	path string
+	doc  *Document
+	meta metastore.FileMeta
 }
 
 type batcher struct {
@@ -51,10 +50,7 @@ func (b *batcher) close() {
 func (b *batcher) run() {
 	defer close(b.done)
 
-	b.idx.mu.RLock()
-	idx := b.idx.index
-	b.idx.mu.RUnlock()
-
+	idx := b.idx.currentIndex()
 	batch := idx.NewBatch()
 	pending := make([]batchJob, 0, b.size)
 
@@ -69,10 +65,12 @@ func (b *batcher) run() {
 		case err != nil:
 			log.Warnf("batch submit failed for %d docs: %v", len(pending), err)
 		default:
+			entries := make(map[string]metastore.FileMeta, len(pending))
 			for _, job := range pending {
-				if err := b.idx.meta.Put(job.path, metastore.FileMeta{ModTime: job.mtime, Size: job.size}); err != nil {
-					log.Debugf("failed to update metastore for %s: %v", job.path, err)
-				}
+				entries[job.path] = job.meta
+			}
+			if err := b.idx.meta.PutBatch(entries); err != nil {
+				log.Warnf("failed to update metastore for %d docs: %v", len(entries), err)
 			}
 			b.idx.indexComplete.Store(true)
 		}

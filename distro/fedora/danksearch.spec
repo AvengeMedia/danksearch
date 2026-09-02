@@ -63,6 +63,7 @@ Type=simple
 ExecStart=/usr/bin/dsearch serve
 Restart=on-failure
 RestartSec=5s
+TimeoutStopSec=30s
 
 StandardOutput=journal
 StandardError=journal
