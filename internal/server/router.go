@@ -31,13 +31,31 @@ type WatcherInterface interface {
 type Router struct {
 	indexer IndexerInterface
 	watcher WatcherInterface
+	config  *config.Config
 }
 
-func NewRouter(indexer IndexerInterface, watcher WatcherInterface) *Router {
+func NewRouter(indexer IndexerInterface, watcher WatcherInterface, cfg *config.Config) *Router {
 	return &Router{
 		indexer: indexer,
 		watcher: watcher,
+		config:  cfg,
 	}
+}
+
+type IndexPathInfo struct {
+	Path          string   `json:"path"`
+	MaxDepth      int      `json:"max_depth"`
+	ExcludeHidden bool     `json:"exclude_hidden"`
+	ExcludeDirs   []string `json:"exclude_dirs"`
+}
+
+// Info is what a client needs to decide whether a search is covered by the
+// index before asking it.
+type Info struct {
+	SchemaVersion         int             `json:"schema_version"`
+	ExpectedSchemaVersion int             `json:"expected_schema_version"`
+	Phase                 string          `json:"phase"`
+	IndexPaths            []IndexPathInfo `json:"index_paths"`
 }
 
 func (r *Router) Handle(_ context.Context, w *ipc.ConnWriter, req ipc.Request, _ *ipc.Subscriber) {
@@ -52,6 +70,8 @@ func (r *Router) Handle(_ context.Context, w *ipc.ConnWriter, req ipc.Request, _
 		r.handleSync(w, req)
 	case "stats":
 		r.handleStats(w, req)
+	case "info":
+		r.handleInfo(w, req)
 	case "index.files":
 		r.handleIndexFiles(w, req)
 	case "watch.start":
@@ -143,6 +163,27 @@ func (r *Router) handleSync(w *ipc.ConnWriter, req ipc.Request) {
 
 func (r *Router) handleStats(w *ipc.ConnWriter, req ipc.Request) {
 	ipc.Respond(w, req.ID, r.indexer.Stats())
+}
+
+func (r *Router) handleInfo(w *ipc.ConnWriter, req ipc.Request) {
+	info := Info{ExpectedSchemaVersion: indexer.SchemaVersion, Phase: indexer.PhaseIdle, IndexPaths: []IndexPathInfo{}}
+	if stats := r.indexer.Stats(); stats != nil {
+		info.SchemaVersion = stats.SchemaVersion
+		if stats.Phase != "" {
+			info.Phase = stats.Phase
+		}
+	}
+	if r.config != nil {
+		for i := range r.config.IndexPaths {
+			ip := &r.config.IndexPaths[i]
+			excludes := ip.ResolvedExcludeDirs()
+			if excludes == nil {
+				excludes = []string{}
+			}
+			info.IndexPaths = append(info.IndexPaths, IndexPathInfo{Path: ip.Path, MaxDepth: ip.MaxDepth, ExcludeHidden: ip.ExcludeHidden, ExcludeDirs: excludes})
+		}
+	}
+	ipc.Respond(w, req.ID, info)
 }
 
 func (r *Router) handleWatchStart(w *ipc.ConnWriter, req ipc.Request) {

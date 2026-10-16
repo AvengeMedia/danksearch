@@ -31,7 +31,10 @@ func TestRouterSuite(t *testing.T) {
 func (s *RouterSuite) SetupTest() {
 	s.indexer = mocks_server.NewMockIndexerInterface(s.T())
 	s.watcher = mocks_server.NewMockWatcherInterface(s.T())
-	s.router = NewRouter(s.indexer, s.watcher)
+	s.router = NewRouter(s.indexer, s.watcher, &config.Config{IndexPaths: []config.IndexPath{
+		{Path: "/home/u", MaxDepth: 6, ExcludeHidden: true, ExcludeDirs: []string{"node_modules"}},
+		{Path: "/srv/data"},
+	}})
 }
 
 func (s *RouterSuite) route(req ipc.Request) []byte {
@@ -68,6 +71,33 @@ func (s *RouterSuite) TestStats() {
 	s.Require().NoError(json.Unmarshal(out, &resp))
 	s.Require().NotNil(resp.Result)
 	s.EqualValues(100, resp.Result.TotalFiles)
+}
+
+func (s *RouterSuite) TestInfo() {
+	s.indexer.EXPECT().Stats().Return(&config.IndexStats{SchemaVersion: 4, Phase: indexer.PhaseSyncing}).Once()
+
+	out := s.route(ipc.Request{ID: 10, Method: "info"})
+
+	var resp ipc.Response[Info]
+	s.Require().NoError(json.Unmarshal(out, &resp))
+	s.Require().NotNil(resp.Result)
+	s.Equal(4, resp.Result.SchemaVersion)
+	s.Equal(indexer.SchemaVersion, resp.Result.ExpectedSchemaVersion)
+	s.Equal(indexer.PhaseSyncing, resp.Result.Phase)
+	s.Require().Len(resp.Result.IndexPaths, 2)
+	s.Equal(IndexPathInfo{Path: "/home/u", MaxDepth: 6, ExcludeHidden: true, ExcludeDirs: []string{"node_modules"}}, resp.Result.IndexPaths[0])
+	s.Equal(IndexPathInfo{Path: "/srv/data", ExcludeDirs: []string{}}, resp.Result.IndexPaths[1])
+}
+
+func (s *RouterSuite) TestInfoWithoutStats() {
+	s.indexer.EXPECT().Stats().Return(nil).Once()
+
+	out := s.route(ipc.Request{ID: 11, Method: "info"})
+
+	var resp ipc.Response[Info]
+	s.Require().NoError(json.Unmarshal(out, &resp))
+	s.Equal(indexer.PhaseIdle, resp.Result.Phase)
+	s.Equal(0, resp.Result.SchemaVersion)
 }
 
 func (s *RouterSuite) TestWatchStart() {

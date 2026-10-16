@@ -209,6 +209,12 @@ func (c *Config) BuildMaps() {
 	}
 }
 
+// ResolvedExcludeDirs is the exclusion list the walker applies, defaults
+// merged in when the path asks for them.
+func (ip *IndexPath) ResolvedExcludeDirs() []string {
+	return ip.resolvedExcludeDirs()
+}
+
 func (ip *IndexPath) resolvedExcludeDirs() []string {
 	if !ip.MergeDefaultExcludeDirs {
 		return ip.ExcludeDirs

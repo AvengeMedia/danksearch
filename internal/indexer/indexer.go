@@ -37,7 +37,7 @@ import (
 	"github.com/rwcarlsen/goexif/exif"
 )
 
-const SchemaVersion = 4
+const SchemaVersion = 5
 
 const (
 	statsMetaKey      = "stats"
@@ -82,6 +82,7 @@ type Document struct {
 	ExifFocalLen   float64   `json:"exif_focal_length,omitempty"`
 	XattrTags      []string  `json:"xattr_tags,omitempty"`
 	DocType        string    `json:"doc_type"`
+	Parents        []string  `json:"parents"`
 }
 
 type SearchResult struct {
@@ -357,6 +358,7 @@ func buildIndexMapping() mapping.IndexMapping {
 	storedKeyword("exif_exposure", "", true)
 	storedNumeric("exif_focal_length")
 	storedKeyword("doc_type", "keyword", false)
+	unstoredText("parents", "keyword")
 
 	xattrTagsField := bleve.NewKeywordFieldMapping()
 	xattrTagsField.Store = true
@@ -444,6 +446,7 @@ func (i *Indexer) buildDocument(path string, info os.FileInfo) (doc *Document, e
 		ContentType:    "inode/directory",
 		ModTime:        info.ModTime(),
 		DocType:        "dir",
+		Parents:        ParentDirs(path),
 	}, nil
 }
 
@@ -464,6 +467,7 @@ func (i *Indexer) readDocument(path string, info os.FileInfo) *Document {
 		ModTime:        info.ModTime(),
 		Size:           info.Size(),
 		DocType:        "file",
+		Parents:        ParentDirs(path),
 	}
 
 	if i.config.IsTextFile(path) {
@@ -637,6 +641,27 @@ func numericRange(field string, lo, hi float64) query.Query {
 	return q
 }
 
+// ParentDirs lists every ancestor directory of path as the lowercased term the
+// folder filter looks up, so narrowing to a folder is one term query instead
+// of a prefix scan over every indexed path.
+func ParentDirs(path string) []string {
+	var out []string
+	for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
+		out = append(out, folderTerm(dir))
+		if dir == filepath.Dir(dir) {
+			return out
+		}
+	}
+}
+
+func folderTerm(dir string) string {
+	trimmed := strings.TrimRight(dir, "/")
+	if trimmed == "" {
+		return "/"
+	}
+	return strings.ToLower(trimmed)
+}
+
 func termQuery(field, term string) query.Query {
 	q := bleve.NewTermQuery(term)
 	q.SetField(field)
@@ -690,10 +715,7 @@ func (i *Indexer) buildFilters(opts *SearchOptions) ([]query.Query, error) {
 		if err != nil || !info.IsDir() {
 			return nil, errdefs.NewCustomError(errdefs.ErrTypeSearchFailed, fmt.Sprintf("folder not found: %s", opts.Folder), nil)
 		}
-		folderPrefix := strings.ToLower(strings.TrimRight(opts.Folder, "/") + "/")
-		folderQuery := bleve.NewPrefixQuery(folderPrefix)
-		folderQuery.SetField("path")
-		filters = append(filters, folderQuery)
+		filters = append(filters, termQuery("parents", folderTerm(opts.Folder)))
 	}
 
 	switch opts.Type {

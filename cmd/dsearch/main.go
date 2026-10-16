@@ -353,7 +353,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	if !httpOnly {
-		unixServer := server.NewUnix(server.NewRouter(idx, w))
+		unixServer := server.NewUnix(server.NewRouter(idx, w, cfg))
 		if err := unixServer.Listen(); err != nil {
 			return err
 		}
